@@ -28,12 +28,12 @@ export class Recorder {
   private chunks: Blob[] = [];
   private decodeContext: AudioContext | null = null;
 
-  async start(): Promise<void> {
+  async start(deviceId = ''): Promise<void> {
     this.releaseStream();
     this.chunks = [];
 
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      this.stream = await navigator.mediaDevices.getUserMedia({ ...AUDIO_CONSTRAINTS, audio: { ...(AUDIO_CONSTRAINTS.audio as MediaTrackConstraints), deviceId: deviceId ? { exact: deviceId } : undefined } });
     } catch (error) {
       this.releaseStream();
       throw new Error(userFacingMediaError(error));

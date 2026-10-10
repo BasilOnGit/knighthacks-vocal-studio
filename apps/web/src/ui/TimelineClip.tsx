@@ -1,5 +1,5 @@
+import { useTimelineScale } from '../session/TimelineScale';
 import type { ReactNode } from 'react';
-import { secToPx } from '../session/timeline';
 
 type TimelineClipProps = {
   startSec: number;
@@ -14,6 +14,7 @@ export function TimelineClip({
   variant = 'audio',
   children,
 }: TimelineClipProps) {
+  const { secToPx, pxPerSec } = useTimelineScale();
   const widthPx = Math.max(secToPx(durationSec), 3);
 
   return (
