@@ -134,7 +134,7 @@ export class PlaybackEngine implements EngineContract {
     this.chain.setEnabled(id, on);
   }
 
-  setPreset(preset: Preset | null): void {
+  setPreset(preset: Preset | null, options?: { pitchHz?: number }): void {
     const now = Tone.now();
     this.wetGain.gain.cancelScheduledValues(now);
     this.wetGain.gain.rampTo(0, FADE_SEC);
@@ -143,7 +143,9 @@ export class PlaybackEngine implements EngineContract {
     }
     this.presetTimer = setTimeout(() => {
       this.presetTimer = null;
-      this.chain.setChain(preset ?? { name: '', explanation: '', chain: [] });
+      this.chain.setChain(preset ?? { name: '', explanation: '', chain: [] }, {
+        pitchHz: options?.pitchHz,
+      });
       const at = Tone.now();
       this.wetGain.gain.cancelScheduledValues(at);
       this.wetGain.gain.setValueAtTime(0, at);

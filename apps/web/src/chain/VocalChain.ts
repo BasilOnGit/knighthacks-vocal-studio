@@ -1,12 +1,17 @@
 import * as Tone from 'tone';
+import { snapSemitones, speedToWindowSize } from '../audio/autotuneSnap';
 import { defaultParams } from '../../../../shared/params';
-import type { EffectNode, EffectType, Preset, VocalChain as VocalChainContract } from '../../../../shared/types';
+import type {
+  EffectNode,
+  EffectType,
+  Preset,
+  VocalChain as VocalChainContract,
+  VocalChainOptions,
+} from '../../../../shared/types';
 
 const RAMP_SEC = 0.05;
 const REVERB_DEBOUNCE_MS = 300;
 const LOW_SHELF_HZ = 200;
-const PRESENCE_HZ = 3000;
-const HIGH_SHELF_HZ = 8000;
 
 type RampParam = {
   rampTo(value: number, rampTime: number): unknown;
@@ -49,6 +54,7 @@ export class VocalChain implements VocalChainContract {
   readonly input: Tone.Gain;
   readonly output: Tone.Gain;
   private slots: BuiltSlot[] = [];
+  private vocalPitchHz = 0;
   private readonly reverbTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly pendingReverb = new Map<string, ReverbPending>();
 
@@ -58,6 +64,8 @@ export class VocalChain implements VocalChainContract {
     this.input.connect(this.output);
   }
 
+  setChain(preset: Preset, options?: VocalChainOptions): void {
+    this.vocalPitchHz = options?.pitchHz ?? 0;
   dispose(): void { this.teardown(); this.input.dispose(); this.output.dispose(); }
 
   setChain(preset: Preset): void {
@@ -135,10 +143,16 @@ export class VocalChain implements VocalChainContract {
 
   private partsFor(id: string, type: EffectType, params: Record<string, number>): SlotParts {
     switch (type) {
+      case 'gate':
+        return this.buildGate(params);
+      case 'autotune':
+        return this.buildAutotune(params);
       case 'eq':
         return this.buildEq(params);
       case 'compressor':
         return this.buildCompressor(params);
+      case 'deesser':
+        return this.buildDeesser(params);
       case 'saturation':
         return this.buildSaturation(params);
       case 'chorus':
@@ -154,6 +168,73 @@ export class VocalChain implements VocalChainContract {
     }
   }
 
+  private buildAutotune(params: Record<string, number>): SlotParts {
+    const live = { ...params };
+    const pitchShift = new Tone.PitchShift({
+      pitch: 0,
+      windowSize: speedToWindowSize(readParam('autotune', live, 'speed')),
+    });
+    pitchShift.wet.value = readParam('autotune', live, 'mix');
+    const applyPitch = () => {
+      const snapAmount = snapSemitones(
+        this.vocalPitchHz,
+        readParam('autotune', live, 'key'),
+        readParam('autotune', live, 'scaleMajor'),
+        readParam('autotune', live, 'snap'),
+      );
+      pitchShift.pitch =
+        snapAmount + readParam('autotune', live, 'shiftSemitones');
+    };
+    applyPitch();
+    return this.single(pitchShift, (key, value) => {
+      live[key] = value;
+      if (key === 'mix') ramp(pitchShift.wet, value);
+      else if (key === 'speed') pitchShift.windowSize = speedToWindowSize(value);
+      else if (
+        key === 'key' ||
+        key === 'snap' ||
+        key === 'scaleMajor' ||
+        key === 'shiftSemitones'
+      ) {
+        applyPitch();
+      }
+    });
+  }
+
+  private buildGate(params: Record<string, number>): SlotParts {
+    const hpf = new Tone.Filter(60, 'highpass');
+    const gate = new Tone.Compressor({
+      threshold: readParam('gate', params, 'thresholdDb'),
+      ratio: 20,
+      attack: readParam('gate', params, 'attackMs') / 1000,
+      release: readParam('gate', params, 'releaseMs') / 1000,
+      knee: 0,
+    });
+    hpf.connect(gate);
+    const input = new Tone.Gain(1);
+    const output = new Tone.Gain(1);
+    return {
+      input,
+      output,
+      tail: gate,
+      connectEffect: () => {
+        input.connect(hpf);
+        gate.connect(output);
+      },
+      apply: (key, value) => {
+        if (key === 'thresholdDb') ramp(gate.threshold, value);
+        else if (key === 'attackMs') ramp(gate.attack, value / 1000);
+        else if (key === 'releaseMs') ramp(gate.release, value / 1000);
+      },
+      dispose: () => {
+        hpf.dispose();
+        gate.dispose();
+        input.dispose();
+        output.dispose();
+      },
+    };
+  }
+
   private buildEq(params: Record<string, number>): SlotParts {
     const highpass = new Tone.Filter(readParam('eq', params, 'lowCutHz'), 'highpass');
     const lowshelf = new Tone.Filter({
@@ -161,41 +242,101 @@ export class VocalChain implements VocalChainContract {
       type: 'lowshelf',
       gain: readParam('eq', params, 'lowShelfDb'),
     });
+    const body = new Tone.Filter({
+      frequency: readParam('eq', params, 'bodyHz'),
+      type: 'peaking',
+      Q: 1,
+      gain: readParam('eq', params, 'bodyDb'),
+    });
     const presence = new Tone.Filter({
-      frequency: PRESENCE_HZ,
+      frequency: readParam('eq', params, 'presenceHz'),
       type: 'peaking',
       Q: 1,
       gain: readParam('eq', params, 'presenceDb'),
     });
-    const highshelf = new Tone.Filter({
-      frequency: HIGH_SHELF_HZ,
+    const air = new Tone.Filter({
+      frequency: readParam('eq', params, 'airHz'),
       type: 'highshelf',
-      gain: readParam('eq', params, 'highShelfDb'),
+      gain: readParam('eq', params, 'airDb'),
     });
     highpass.connect(lowshelf);
-    lowshelf.connect(presence);
-    presence.connect(highshelf);
+    lowshelf.connect(body);
+    body.connect(presence);
+    presence.connect(air);
     const input = new Tone.Gain(1);
     const output = new Tone.Gain(1);
     return {
       input,
       output,
-      tail: highshelf,
+      tail: air,
       connectEffect: () => {
         input.connect(highpass);
-        highshelf.connect(output);
+        air.connect(output);
       },
       apply: (key, value) => {
         if (key === 'lowCutHz') ramp(highpass.frequency, value);
         else if (key === 'lowShelfDb') ramp(lowshelf.gain, value);
+        else if (key === 'bodyHz') ramp(body.frequency, value);
+        else if (key === 'bodyDb') ramp(body.gain, value);
+        else if (key === 'presenceHz') ramp(presence.frequency, value);
         else if (key === 'presenceDb') ramp(presence.gain, value);
-        else if (key === 'highShelfDb') ramp(highshelf.gain, value);
+        else if (key === 'airHz') ramp(air.frequency, value);
+        else if (key === 'airDb') ramp(air.gain, value);
       },
       dispose: () => {
         highpass.dispose();
         lowshelf.dispose();
+        body.dispose();
         presence.dispose();
-        highshelf.dispose();
+        air.dispose();
+        input.dispose();
+        output.dispose();
+      },
+    };
+  }
+
+  private buildDeesser(params: Record<string, number>): SlotParts {
+    const freq = readParam('deesser', params, 'freqHz');
+    const threshold = readParam('deesser', params, 'thresholdDb');
+    const mix = readParam('deesser', params, 'mix');
+
+    const hpf = new Tone.Filter(freq, 'highpass');
+    const comp = new Tone.Compressor({
+      threshold,
+      ratio: 10,
+      attack: 0.003,
+      release: 0.08,
+      knee: 0,
+    });
+    const subtract = new Tone.Subtract();
+    const reduction = new Tone.Gain(-mix);
+    const input = new Tone.Gain(1);
+    const output = new Tone.Gain(1);
+
+    hpf.connect(subtract);
+    hpf.connect(comp);
+    comp.connect(subtract.subtrahend);
+    subtract.connect(reduction);
+
+    return {
+      input,
+      output,
+      tail: reduction,
+      connectEffect: () => {
+        input.connect(output);
+        input.connect(hpf);
+        reduction.connect(output);
+      },
+      apply: (key, value) => {
+        if (key === 'freqHz') ramp(hpf.frequency, value);
+        else if (key === 'thresholdDb') ramp(comp.threshold, value);
+        else if (key === 'mix') reduction.gain.value = -value;
+      },
+      dispose: () => {
+        hpf.dispose();
+        comp.dispose();
+        subtract.dispose();
+        reduction.dispose();
         input.dispose();
         output.dispose();
       },

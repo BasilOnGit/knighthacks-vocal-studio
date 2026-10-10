@@ -1,5 +1,5 @@
 import { fakePreset } from '../../../shared/fakePreset.ts';
-import { MAX_EFFECTS, PARAM_RANGES } from '../../../shared/params.ts';
+import { FIXED_ORDER, MAX_EFFECTS, PARAM_RANGES, fillParams } from '../../../shared/params.ts';
 import { validatePreset } from '../../../shared/validate.ts';
 
 const FEATURE_KEYS = [
@@ -23,30 +23,48 @@ const CATALOG = Object.entries(PARAM_RANGES)
   })
   .join('\n');
 
-const SYSTEM_PROMPT = `You choose which effects a vocal needs and set them. Output JSON only, matching the schema, no prose.
+const PROTOCOL_ORDER = FIXED_ORDER.join(' → ');
+
+const SYSTEM_PROMPT = `You are a vocal mixing engineer. Output JSON only, matching the schema, no prose.
 Schema: {"name": string, "explanation": string, "chain": [{"type": string, "params": {parameter: number}, "why": string}]}
-Use only catalog effects and parameters. Stay inside ranges.
-Include only effects that serve the description. Fewer is better. Never more than ${MAX_EFFECTS}.
-Adapt to the measurements.
+Use only catalog effects and parameters. Stay inside ranges. Never more than ${MAX_EFFECTS} effects.
+List effects in signal order (first in chain = hits the vocal first). The host keeps your order; it does not reorder.
+You may include the same type more than once (e.g. two eq nodes: subtractive then additive).
 Write a short why for each effect and a one-sentence explanation.
-The code fills missing parameters and sorts the chain. Omit effects that are not needed.
+The code fills missing parameters and assigns ids.
+
+Mixing protocol (follow unless the user's prompt clearly contradicts a step):
+1. gate — only when noiseFloorDb is high (noisy room); omit on clean takes
+2. autotune — when the user asks for autotune, T-Pain, trap, hyperpop, polished pitch, or modern R&B; mix 0.5–1, speed 0.7–1; omit for raw/natural/unprocessed vocals
+3. eq (subtractive) — always: HPF via lowCutHz, cut mud with bodyDb if needed, avoid large boosts here
+4. compressor — always; faster attack (3–10 ms) and ratio 4–8 for punch; add makeupDb 2–4 dB when loudnessDb is low
+5. deesser — default on; lighter mix if centroid is already high (bright voice)
+6. eq (additive) — when the style needs presence/air (bright, pop, radio); skip for dark, lo-fi, telephone
+7. saturation — default light drive/mix for punch; more for gritty or aggressive
+8. chorus / delay — only for wide, dreamy, slap, or spacious prompts
+9. reverb — always unless the user asked for dry / no reverb / bone-dry; intimate = short decay and low mix, anthemic = longer and wetter
+
+Do not skip eq, compressor, deesser, or reverb just to keep the chain short. Default mixes should feel forward and punchy, not washed out.
 
 Catalog:
 ${CATALOG}
 
+Recommended signal order reference: ${PROTOCOL_ORDER}
+
 Adapting to the voice:
-Centroid already high (bright voice): boost highs less. Centroid low (dark voice): boost presence and air more.
-Low loudness: lower the compressor threshold less and add makeup gain.
-High noise floor: avoid heavy compression and big high-frequency boosts.
+Centroid already high (bright voice): boost air less, deesser mix lower. Centroid low (dark voice): presence and air more.
+Low loudness: gentler threshold and add makeup gain.
+High noise floor: add gate, avoid heavy compression and large high-frequency boosts.
 
 Descriptor guide:
-warm: lowShelf +2 to +3, highShelf -1 to 0, mild compression (ratio 2 to 3)
-airy, bright: highShelf +3 to +5, presence +1 to +2
+warm: lowShelfDb +2 to +3, airDb -1 to 0, mild compression (ratio 2 to 3), reverb mix ~0.12
+airy, bright: airDb +3 to +5, presenceDb +1 to +2
 intimate, close: compressor ratio 3 to 4, short reverb (decay under 1 s, mix 0.12 or less), no delay
 dreamy, spacious: reverb mix 0.3 to 0.45, decay 3 to 4.5 s, delay mix 0.15 to 0.25 at 350 to 450 ms, light chorus
-punchy, aggressive: compressor ratio 4 to 6, attack 5 to 15 ms, saturation drive 0.3 to 0.5, presence +2
-gritty, lo-fi: saturation mix 0.3 to 0.5, highShelf -4, lowCut ~150 Hz
-radio, telephone: lowCut ~300 Hz, highShelf -6, presence +4
+punchy, aggressive: compressor ratio 5 to 8, attack 3 to 8 ms, release 60 to 120 ms, makeupDb 3 to 5, saturation drive 0.25 to 0.45, mix 0.2 to 0.35, presenceDb +3 to +5, bodyDb -2 if muddy
+trap, autotune, T-Pain: autotune mix 0.7 to 1, speed 0.8 to 1, snap 0.85 to 1, then tight compression (ratio 5+, attack under 10 ms)
+gritty, lo-fi: saturation mix 0.3 to 0.5, airDb -4, lowCutHz ~150
+radio, telephone: lowCutHz ~300 Hz, airDb -6, presenceDb +4, skip second eq
 wide, thick: chorus mix 0.25 to 0.35, short delay mix 0.1`;
 
 export function validatePrompt(body) {
@@ -69,6 +87,29 @@ export function validateFeatures(features) {
     result[key] = value;
   }
   return result;
+}
+
+export function promptRejectsSpace(prompt) {
+  return /\b(dry|no reverb|bone-?dry|without reverb|a cappella dry)\b/i.test(prompt);
+}
+
+export function ensureMixProtocol(preset, prompt) {
+  const chain = [...preset.chain];
+  if (!chain.some((node) => node.type === 'eq')) {
+    chain.unshift({
+      type: 'eq',
+      params: fillParams('eq', { lowCutHz: 80 }),
+      why: 'Default high-pass cleanup',
+    });
+  }
+  if (!chain.some((node) => node.type === 'reverb') && !promptRejectsSpace(prompt)) {
+    chain.push({
+      type: 'reverb',
+      params: fillParams('reverb', { decaySec: 0.9, mix: 0.12 }),
+      why: 'Short room by default',
+    });
+  }
+  return validatePreset({ ...preset, chain });
 }
 
 function fallbackResult() {
@@ -122,7 +163,8 @@ async function requestPreset(fetchImpl, token, model, prompt, features, errorNot
   if (typeof content !== 'string' || !content.trim()) {
     throw new SyntaxError('Model returned no JSON message');
   }
-  return validatePreset(parseModelJson(content));
+  const validated = validatePreset(parseModelJson(content));
+  return ensureMixProtocol(validated, prompt);
 }
 
 export async function generatePreset(prompt, features, options = {}) {
