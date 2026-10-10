@@ -58,6 +58,8 @@ export class VocalChain implements VocalChainContract {
     this.input.connect(this.output);
   }
 
+  dispose(): void { this.teardown(); this.input.dispose(); this.output.dispose(); }
+
   setChain(preset: Preset): void {
     this.teardown();
     if (preset.chain.length === 0) {

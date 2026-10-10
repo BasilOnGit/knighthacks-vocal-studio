@@ -1,10 +1,10 @@
 import type { TrimRange } from '../../../../shared/types';
-import { timelineClipStartSec, trimDurationSec } from '../audio/sliceBuffer';
+import { timelineClipStartSec, trimDurationSec } from '../audio/sliceBuffer.ts';
 
 export type SessionAudioClip = {
   buffer: AudioBuffer;
   trim: TrimRange;
-  /** Timeline anchor (same role as vocal record start before trim offset). */
+  /** Timeline position of source sample zero. May be negative after moving a trimmed clip to 0:00. */
   clipStartSec: number;
   fileName: string;
 };

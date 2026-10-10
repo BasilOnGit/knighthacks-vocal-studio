@@ -6,6 +6,7 @@ function formatTransportTime(seconds: number): string {
 }
 
 type TopBarProps = {
+  pending?: boolean;
   playing: boolean;
   recording: boolean;
   canPlay: boolean;
@@ -20,6 +21,7 @@ type TopBarProps = {
 };
 
 export function TopBar({
+  pending = false,
   playing,
   recording,
   canPlay,
@@ -44,7 +46,7 @@ export function TopBar({
             type="button"
             className={`transport-btn transport-btn--play${playing ? ' transport-btn--active' : ''}`}
             onClick={onPlay}
-            disabled={!canPlay || playing || recording}
+            disabled={!canPlay || playing || recording || pending}
             aria-label="Play"
           >
             Play
@@ -53,7 +55,7 @@ export function TopBar({
             type="button"
             className={`transport-btn transport-btn--record${recording ? ' transport-btn--recording' : ''}`}
             onClick={onRecord}
-            disabled={recording}
+            disabled={recording || pending}
             aria-label="Record"
           >
             Record
@@ -61,6 +63,7 @@ export function TopBar({
           <button
             type="button"
             className="transport-btn transport-btn--stop"
+            disabled={pending}
             onClick={onStop}
             aria-label="Stop"
           >
@@ -90,7 +93,7 @@ export function TopBar({
         />
         <span className="transport-master-value">{masterDb} dB</span>
         <span id="master-hint" className="transport-master-hint">
-          Not in the audio path yet
+          Output level
         </span>
       </label>
     </header>

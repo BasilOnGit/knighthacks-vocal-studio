@@ -1,4 +1,4 @@
-import { secToPx } from '../session/timeline';
+import { useTimelineScale } from '../session/TimelineScale';
 import { timelineSecFromClientX } from './TimelinePlayhead';
 
 type TimelineRulerProps = {
@@ -8,8 +8,9 @@ type TimelineRulerProps = {
 };
 
 export function TimelineRuler({ durationSec, seekDisabled = false, onSeek }: TimelineRulerProps) {
+  const { secToPx, pxPerSec } = useTimelineScale();
   const ticks: number[] = [];
-  const step = durationSec > 120 ? 5 : 1;
+  const step = durationSec > 120 ? 5 : pxPerSec < 40 ? 2 : 1;
   for (let t = 0; t <= durationSec; t += step) {
     ticks.push(t);
   }
@@ -28,7 +29,7 @@ export function TimelineRuler({ durationSec, seekDisabled = false, onSeek }: Tim
           if (!scroll) {
             return;
           }
-          onSeek(timelineSecFromClientX(event.clientX, scroll, durationSec));
+          onSeek(timelineSecFromClientX(event.clientX, scroll, durationSec, pxPerSec));
         }}
       >
         {ticks.map((t) => (

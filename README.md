@@ -19,11 +19,13 @@ Copy `apps/api/.env.example` to `apps/api/.env` when configuring integrations. N
 - Node API that validates the prompt and voice measurements, calls Hugging Face when `HF_TOKEN` and `HF_MODEL` are set, and returns a labeled fallback preset if that call fails.
 - Hugging Face and Neon environment placeholders, plus the team build plan.
 
-Beat upload, master volume, and export are not in this version. Neon is the database; the Node server is the backend application.
+The updated studio supports audio imports, recording onto multiple tracks, overlapping snippets, per-snippet effects, waveform trimming, clip deletion with Backspace/Delete, microphone monitoring, and track/master mixing. Desktop controls fit within the viewport; track and inspector panels scroll independently. Export and saved sessions are not implemented. Neon is the database; the Node server is the backend application.
 
 ## Checks
 `npm test` checks backend prompt validation.
+`npm run test:ui` checks clip editing, snippet operations, and audio scheduling using a mocked audio engine.
 `npm run check` checks frontend TypeScript.
 `npm run build` builds the frontend.
 
 See [the build plan](docs/BUILD_PLAN.md) for work order and Cursor handoff.
+See [the UI/backend handoff](docs/UI_BACKEND_HANDOFF.md) for integration points and manual verification.

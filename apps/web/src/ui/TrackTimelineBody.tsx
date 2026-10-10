@@ -1,5 +1,5 @@
+import { useTimelineScale } from '../session/TimelineScale';
 import type { ReactNode } from 'react';
-import { secToPx } from '../session/timeline';
 
 type TrackTimelineBodyProps = {
   timelineDurationSec: number;
@@ -10,6 +10,7 @@ export function TrackTimelineBody({
   timelineDurationSec,
   children = null,
 }: TrackTimelineBodyProps) {
+  const { secToPx, pxPerSec } = useTimelineScale();
   return (
     <div
       className="track-timeline-body"
