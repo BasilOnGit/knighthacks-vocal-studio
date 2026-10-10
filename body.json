@@ -1,0 +1,1 @@
+{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"Reply with a JSON object with one key called hello."}],"max_tokens":300}

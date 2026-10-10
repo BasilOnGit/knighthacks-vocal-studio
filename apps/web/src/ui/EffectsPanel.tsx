@@ -63,7 +63,7 @@ function EffectCard({
           <strong>{node.type}</strong>
           {node.why ? <span> — {node.why}</span> : null}
         </div>
-        <label className="toggle">
+        <label className="transport-toggle">
           <input
             type="checkbox"
             checked={node.enabled}
