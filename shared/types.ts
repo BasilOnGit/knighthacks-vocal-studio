@@ -42,7 +42,7 @@ export type VocalInputNode = unknown;
 export interface Engine {
   loadBeat(file: File): Promise<void>;
   setVocal(buffer: AudioBuffer, trim: TrimRange, startSec?: number): void;
-  play(): void;
+  play(fromTimelineSec?: number): void;
   stop(): void;
   seek(sec: number): void;
   setBypass(dry: boolean): void;

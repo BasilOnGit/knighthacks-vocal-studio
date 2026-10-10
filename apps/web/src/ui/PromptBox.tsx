@@ -16,7 +16,7 @@ export function PromptBox({
   onGenerate,
 }: PromptBoxProps) {
   return (
-    <form onSubmit={onGenerate}>
+    <form className="prompt-form" onSubmit={onGenerate}>
       <label htmlFor="prompt">Vocal style</label>
       <textarea
         id="prompt"

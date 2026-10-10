@@ -16,10 +16,10 @@ Copy `apps/api/.env.example` to `apps/api/.env` when configuring integrations. N
 - Record a vocal, trim it on a waveform, and play the trimmed clip.
 - Measure the take (loudness, brightness, pitch) and show warnings.
 - Apply an editable effect chain (EQ, compressor, saturation, chorus, delay, reverb) with a dry/processed toggle.
-- Node API that validates the prompt and voice measurements, then returns a labeled fallback preset until `HF_TOKEN` and `HF_MODEL` are set.
+- Node API that validates the prompt and voice measurements, calls Hugging Face when `HF_TOKEN` and `HF_MODEL` are set, and returns a labeled fallback preset if that call fails.
 - Hugging Face and Neon environment placeholders, plus the team build plan.
 
-Beat upload, master volume, export, and live model generation are not in this version. Neon is the database; the Node server is the backend application.
+Beat upload, master volume, and export are not in this version. Neon is the database; the Node server is the backend application.
 
 ## Checks
 `npm test` checks backend prompt validation.
