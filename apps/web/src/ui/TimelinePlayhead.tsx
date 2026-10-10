@@ -1,5 +1,5 @@
+import { useTimelineScale } from '../session/TimelineScale';
 import React from 'react';
-import { LANE_HEADER_WIDTH_PX, PX_PER_SEC, secToPx } from '../session/timeline';
 
 type TimelinePlayheadProps = {
   positionSec: number;
@@ -12,10 +12,12 @@ export function timelineSecFromClientX(
   clientX: number,
   scrollEl: HTMLElement,
   durationSec: number,
+  pxPerSec = 40,
 ): number {
   const scrollRect = scrollEl.getBoundingClientRect();
-  const x = clientX - scrollRect.left + scrollEl.scrollLeft - LANE_HEADER_WIDTH_PX;
-  const sec = x / PX_PER_SEC;
+  const header = parseFloat(getComputedStyle(scrollEl).getPropertyValue('--lane-header-width')) || 190;
+  const x = clientX - scrollRect.left + scrollEl.scrollLeft - header;
+  const sec = x / pxPerSec;
   return clamp(sec, 0, Math.max(durationSec, 0));
 }
 
@@ -25,6 +27,7 @@ export function TimelinePlayhead({
   disabled = false,
   onPositionChange,
 }: TimelinePlayheadProps) {
+  const { secToPx, pxPerSec } = useTimelineScale();
   const layerRef = React.useRef<HTMLDivElement>(null);
   const dragRef = React.useRef<{ pointerId: number; dragging: boolean } | null>(null);
   const onPositionChangeRef = React.useRef(onPositionChange);
@@ -37,9 +40,9 @@ export function TimelinePlayhead({
       if (!scroll) {
         return positionSec;
       }
-      return timelineSecFromClientX(clientX, scroll, durationSec);
+      return timelineSecFromClientX(clientX, scroll, durationSec, pxPerSec);
     },
-    [durationSec, positionSec],
+    [durationSec, positionSec, pxPerSec],
   );
 
   const endDrag = React.useCallback((target: HTMLElement, pointerId: number) => {

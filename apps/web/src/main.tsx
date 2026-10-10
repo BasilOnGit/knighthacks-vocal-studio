@@ -1,612 +1,135 @@
 import React from 'react';
-import { createRoot } from 'react-dom/client';
-import { analyze, featureWarnings } from './analysis/analyze';
-import { decodeAudioFile } from './audio/decodeAudioFile';
-import { PlaybackEngine } from './engine/Engine';
-import { Recorder } from './engine/recorder';
-import type { Preset, TrimRange } from '../../../shared/types';
-import {
-  canAddSessionLane,
-  createExtraTrack,
-  MAX_SESSION_LANES,
-  sortExtraTracks,
-  type ExtraTrack,
-} from './session/extraTracks';
-import { timelineClipStartSec, trimDurationSec } from './audio/sliceBuffer';
-import {
-  clipTimelineEndSec,
-  clipTimelineStartSec,
-  createSessionClip,
-  type SessionAudioClip,
-} from './session/clip';
-import { computeTimelineDurationSec } from './session/timeline';
-import { AudioImportRow } from './ui/AudioImportRow';
-import { TimelinePlayhead } from './ui/TimelinePlayhead';
-import { TimelineRuler } from './ui/TimelineRuler';
-import { BeatRow } from './ui/BeatRow';
-import { EffectsPanel } from './ui/EffectsPanel';
-import { FeatureList } from './ui/FeatureList';
-import { PromptBox } from './ui/PromptBox';
-import { TopBar } from './ui/TopBar';
-import { VocalRow } from './ui/VocalRow';
+import {createRoot} from 'react-dom/client';
+import {TimelineScale} from './session/TimelineScale';
+import {anchorForTimelineStart} from './audio/clipEditing';
+import {decodeAudioFile,AUDIO_FILE_ACCEPT} from './audio/decodeAudioFile';
+import {clipTimelineStartSec,clipTimelineEndSec} from './session/clip';
+import {newSnippet,overlapRows,deleteSnippet,ignoresDeleteShortcut,type Snippet,type SessionTrack} from './session/snippets';
+import {computeTimelineDurationSec} from './session/timeline';
+import {SessionEngine} from './engine/SessionEngine';
+import {Recorder} from './engine/recorder';
+import {TopBar} from './ui/TopBar';
+import {InputPanel} from './ui/InputPanel';
+import {TrackMixer,type Mix} from './ui/TrackMixer';
+import {TimelineRuler} from './ui/TimelineRuler';
+import {TimelinePlayhead} from './ui/TimelinePlayhead';
+import {TrimWaveViewport} from './ui/TrimWaveViewport';
+import {EffectsPanel} from './ui/EffectsPanel';
+import {PromptBox} from './ui/PromptBox';
+import {FeatureList} from './ui/FeatureList';
+import {analyze,featureWarnings} from './analysis/analyze';
+import {defaultParams,FIXED_ORDER} from '../../../shared/params';
+import {validatePreset} from '../../../shared/validate';
+import type {EffectType,Preset} from '../../../shared/types';
 import './style.css';
-
-function chainSignature(preset: Preset | null): string {
-  if (!preset) {
-    return '';
-  }
-  return preset.chain.map((node) => `${node.id}:${node.type}`).join('|');
+const MAX_TRACKS=12;
+function App(){
+ const [tracks,setTracks]=React.useState<SessionTrack[]>([{id:'beat',name:'Beat'},{id:'vocal',name:'Vocal'}]);
+ const [clips,setClips]=React.useState<Snippet[]>([]);
+ const [selectedId,setSelectedId]=React.useState<string|null>(null);
+ const [armedId,setArmedId]=React.useState('vocal');
+ const [panel,setPanel]=React.useState<'clip'|'effects'|'ai'>('clip');
+ const [mobileView,setMobileView]=React.useState<'timeline'|'inspector'|'mixer'>('timeline');
+ const [mixes,setMixes]=React.useState<Record<string,Mix>>({});
+ const [deviceId,setDeviceId]=React.useState('');const [zoom,setZoom]=React.useState(40);
+ const [playing,setPlaying]=React.useState(false);const [recording,setRecording]=React.useState(false);
+ const [position,setPosition]=React.useState(0);const [recordElapsed,setRecordElapsed]=React.useState(0);
+ const [masterDb,setMasterDb]=React.useState(0);const [dry,setDry]=React.useState(false);
+ const [prompt,setPrompt]=React.useState('');const [generating,setGenerating]=React.useState(false);
+ const [error,setError]=React.useState('');const [importing,setImporting]=React.useState<string|null>(null);
+ const [recordPending,setRecordPending]=React.useState(false);
+ const [sources,setSources]=React.useState<Record<string,string>>({});const [generated,setGenerated]=React.useState<Record<string,Preset>>({});
+ const engineRef=React.useRef<SessionEngine|null>(null);const recorderRef=React.useRef<Recorder|null>(null);
+ const recordLock=React.useRef(false);const generationLock=React.useRef(false);
+ const recordTarget=React.useRef<{trackId:string;start:number;perf:number}|null>(null);
+ const fileInput=React.useRef<HTMLInputElement>(null);const importTarget=React.useRef('beat');
+ const selected=clips.find(c=>c.id===selectedId)??null;
+ React.useEffect(()=>{const engine=new SessionEngine(()=>{setPlaying(false);setPosition(0);});engineRef.current=engine;recorderRef.current=new Recorder();return()=>{engine.dispose();engineRef.current=null;};},[]);
+ React.useEffect(()=>{engineRef.current?.sync(clips);engineRef.current?.setMixes(mixes,tracks.map(t=>t.id));},[clips,mixes,tracks]);
+ React.useEffect(()=>{engineRef.current?.setMasterGain(masterDb);},[masterDb]);
+ React.useEffect(()=>{engineRef.current?.setBypass(dry);},[dry]);
+ React.useEffect(()=>{
+  if(!playing&&!recording)return;
+  let frame=0;function tick(){if(recording&&recordTarget.current){const elapsed=(performance.now()-recordTarget.current.perf)/1000;setRecordElapsed(elapsed);setPosition(recordTarget.current.start+elapsed);}else setPosition(engineRef.current?.getSeconds()??0);frame=requestAnimationFrame(tick);}frame=requestAnimationFrame(tick);return()=>cancelAnimationFrame(frame);
+ },[playing,recording]);
+ function stopPlayback(reset=false){engineRef.current?.stop();setPlaying(false);if(reset)setPosition(0);}
+ function updateClip(id:string,patch:Partial<Snippet>,structural=false){if(recording||recordPending)return;if(structural)stopPlayback();setClips(current=>current.map(c=>c.id===id?{...c,...patch}:c));}
+ const removeSelected=React.useCallback(()=>{if(!selectedId||recording||recordPending)return;engineRef.current?.stop();setPlaying(false);setClips(current=>deleteSnippet(current,selectedId));setSelectedId(null);setSources(current=>{const next={...current};delete next[selectedId];return next;});setGenerated(current=>{const next={...current};delete next[selectedId];return next;});},[selectedId,recording,recordPending]);
+ React.useEffect(()=>{const handler=(event:KeyboardEvent)=>{if((event.key==='Backspace'||event.key==='Delete')&&!ignoresDeleteShortcut(event.target)&&selectedId&&!recording){event.preventDefault();removeSelected();}};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[selectedId,recording,removeSelected]);
+ const features=React.useMemo(()=>selected?analyze(selected.buffer,selected.trim.start,selected.trim.end):null,[selected?.buffer,selected?.trim.start,selected?.trim.end]);
+ async function startRecord(trackId=armedId){
+  if(recordLock.current||recording)return;recordLock.current=true;setRecordPending(true);setError('');
+  const at=playing?(engineRef.current?.getSeconds()??position):position;stopPlayback();setPosition(at);setArmedId(trackId);
+  try{await recorderRef.current!.start(deviceId);recordTarget.current={trackId,start:at,perf:performance.now()};setRecordElapsed(0);setRecording(true);}catch(e){setError(e instanceof Error?e.message:'Could not start recording.');}finally{recordLock.current=false;setRecordPending(false);}
+ }
+ async function stopRecord(){if(recordLock.current||!recording)return;recordLock.current=true;setRecordPending(true);const target=recordTarget.current;
+  try{const buffer=await recorderRef.current!.stop();if(target){const clip=newSnippet(buffer,`Take ${clips.filter(c=>c.trackId===target.trackId).length+1}`,target.trackId,target.start);setClips(current=>[...current,clip]);setSelectedId(clip.id);setPosition(target.start+buffer.duration);}}catch(e){setError(e instanceof Error?e.message:'Recording failed.');}finally{recordTarget.current=null;setRecording(false);setRecordElapsed(0);recordLock.current=false;setRecordPending(false);}
+ }
+ async function importFiles(files:File[],trackId:string){
+  if(recording)return;setImporting(trackId);setError('');const at=position;stopPlayback();
+  try{const imported=await Promise.all(files.map(async file=>newSnippet(await decodeAudioFile(file),file.name,trackId,at)));setClips(current=>[...current,...imported]);setSelectedId(imported[0]?.id??null);}catch(e){setError(e instanceof Error?e.message:'Could not import audio.');}finally{setImporting(null);}
+ }
+ function chooseImport(trackId:string){importTarget.current=trackId;fileInput.current?.click();}
+ function addTrack(){if(tracks.length>=MAX_TRACKS)return;const track={id:crypto.randomUUID(),name:`Track ${tracks.length+1}`};setTracks(current=>[...current,track]);setArmedId(track.id);}
+ function removeTrack(id:string){if(recording||recordPending||importing)return;stopPlayback();setTracks(current=>current.filter(t=>t.id!==id));setClips(current=>current.filter(c=>c.trackId!==id));if(clips.find(c=>c.id===selectedId)?.trackId===id)setSelectedId(null);if(armedId===id)setArmedId('vocal');}
+ async function play(){if(recording||!clips.length)return;setError('');try{const started=await engineRef.current?.play(position);setPlaying(!!started);}catch(e){setPlaying(false);setError('Unable to start audio playback. Try Play again.');}}
+ function seek(sec:number){if(recording)return;const next=Math.max(0,sec);setPosition(next);if(playing)void engineRef.current?.play(next).catch(()=>{setPlaying(false);setError('Playback failed.');});}
+ function setSelectedPreset(preset:Preset){if(!selected)return;const oldKey=selected.preset.chain.map(n=>n.id+':'+n.type).join('|');const newKey=preset.chain.map(n=>n.id+':'+n.type).join('|');updateClip(selected.id,{preset},oldKey!==newKey);setSources(current=>({...current,[selected.id]:'manual'}));}
+ function addEffect(type:EffectType){if(!selected||selected.preset.chain.some(n=>n.type===type))return;const next={...selected.preset,chain:[...selected.preset.chain,{id:crypto.randomUUID(),type,enabled:true,params:defaultParams(type)}]};next.chain.sort((a,b)=>FIXED_ORDER.indexOf(a.type)-FIXED_ORDER.indexOf(b.type));setSelectedPreset(next);}
+ async function generate(event:React.FormEvent){event.preventDefault();if(!selected||!features||!prompt.trim()||generationLock.current)return;const id=selected.id;generationLock.current=true;setGenerating(true);setError('');
+  try{const response=await fetch('/api/presets/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt.trim(),features})});const data=await response.json().catch(()=>null);if(!response.ok||!data?.preset)throw new Error(data?.error??'Preset generation failed. Check that the API server is running.');const preset=validatePreset(data.preset);stopPlayback();setClips(current=>current.map(c=>c.id===id?{...c,preset}:c));setGenerated(current=>({...current,[id]:structuredClone(preset)}));setSources(current=>({...current,[id]:data.source??'model'}));}catch(e){setError(e instanceof Error?e.message:'Preset generation failed.');}finally{generationLock.current=false;setGenerating(false);}
+ }
+ const timelineDuration=computeTimelineDurationSec([...clips.map(clipTimelineEndSec),recordTarget.current?recordTarget.current.start+recordElapsed:0]);
+ return <TimelineScale.Provider value={zoom}><div className="daw" style={{'--px-per-sec':`${zoom}px`} as React.CSSProperties}>
+  <div className="studio-heading"><span className="eyebrow">VOCAL STUDIO / SESSION 01</span><span className="session-local">● Browser-local audio</span></div>
+  <TopBar playing={playing} recording={recording} pending={recordPending} canPlay={clips.length>0&&!recordPending} positionSec={position} dry={dry} masterDb={masterDb} onPlay={()=>void play()} onRecord={()=>void startRecord()} onStop={()=>recording?void stopRecord():stopPlayback(true)} onDryChange={setDry} onMasterDbChange={setMasterDb}/>
+  <InputPanel deviceId={deviceId} onDeviceChange={setDeviceId} recording={recording||recordPending}/>
+  <div className="session-toolbar"><label>Record into <select value={armedId} disabled={recording||recordPending} onChange={e=>setArmedId(e.target.value)}>{tracks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label><span>{recordPending?'Preparing audio…':recording?'Recording — Stop to keep this take':'New takes are added at the playhead. Existing clips stay in place.'}</span></div>
+  {error&&<p className="session-error" role="alert">{error}</p>}
+  <input ref={fileInput} type="file" multiple accept={AUDIO_FILE_ACCEPT} hidden onChange={e=>{const files=Array.from(e.target.files??[]);e.target.value='';if(files.length)void importFiles(files,importTarget.current);}}/>
+  <nav className="mobile-studio-nav" aria-label="Studio view">{(['timeline','inspector','mixer'] as const).map(view=><button key={view} type="button" aria-pressed={mobileView===view} onClick={()=>setMobileView(view)}>{view==='timeline'?'Tracks':view==='inspector'?'Clip & effects':'Mixer'}</button>)}</nav>
+  <div className={`studio-work-area mobile-view-${mobileView}`}>
+  <div className="daw-arrangement"><div className="arrangement-h-scroll"><div className="arrangement-canvas" style={{'--timeline-sec':timelineDuration} as React.CSSProperties}>
+   <TimelineRuler durationSec={timelineDuration} seekDisabled={recording||recordPending} onSeek={seek}/>
+   {tracks.map(track=>{const layout=overlapRows(clips.filter(c=>c.trackId===track.id));const isRecording=recording&&recordTarget.current?.trackId===track.id;
+    return <section key={track.id} className="track-lane snippet-lane" aria-label={`${track.name} track`}>
+     <div className="track-lane-header"><input className="track-name-input" aria-label={`Rename ${track.name}`} value={track.name} maxLength={40} disabled={recording} onChange={e=>setTracks(current=>current.map(t=>t.id===track.id?{...t,name:e.target.value}:t))}/><span className="track-lane-meta">{layout.clips.length} clip{layout.clips.length===1?'':'s'}</span>
+      <div className="track-lane-actions"><button type="button" className="track-record-button" disabled={recording||recordPending} onClick={()=>void startRecord(track.id)}>● Record</button><button type="button" disabled={!!importing||recording||recordPending} onClick={()=>chooseImport(track.id)}>{importing===track.id?'Loading…':'Import'}</button>{!['beat','vocal'].includes(track.id)&&<button type="button" disabled={recording||recordPending||!!importing} onClick={()=>removeTrack(track.id)}>Remove track</button>}</div><button className="arm-track" type="button" aria-pressed={armedId===track.id} disabled={recording||recordPending} onClick={()=>setArmedId(track.id)}>{armedId===track.id?'Recording target':'Set recording target'}</button>
+     </div>
+     <div className="track-lane-clip track-lane-clip--timeline"><div className="track-timeline-body snippet-body" style={{width:timelineDuration*zoom,height:Math.max(layout.rowCount+(isRecording?1:0),1)*104,minHeight:104}}>
+      {layout.clips.map(({clip,row})=><div key={clip.id} className={`timeline-clip snippet-clip timeline-clip--audio${selectedId===clip.id?' snippet-selected':''}${clip.muted?' snippet-muted':''}`} style={{left:clipTimelineStartSec(clip)*zoom,width:Math.max(4,(clip.trim.end-clip.trim.start)*zoom),top:row*104+6,height:90,bottom:'auto'}} onPointerDownCapture={()=>{if(!recording)setSelectedId(clip.id);}}>
+       <button type="button" className="snippet-title" aria-label={`Select ${clip.name}`} onClick={()=>setSelectedId(clip.id)}>{clip.name}</button>
+       <div className="snippet-wave"><TrimWaveViewport buffer={clip.buffer} trim={clip.trim} timelineStartSec={clipTimelineStartSec(clip)} onTrimChange={trim=>updateClip(clip.id,{trim},true)} onTimelineStartChange={start=>updateClip(clip.id,{clipStartSec:anchorForTimelineStart(start,clip.trim)},true)}/></div>
+      </div>)}
+      {isRecording&&<div className="timeline-clip timeline-clip--recording" style={{left:(recordTarget.current?.start??0)*zoom,width:Math.max(4,recordElapsed*zoom),top:layout.rowCount*104+6,height:90,bottom:'auto'}}><span className="recording-label">Recording {recordElapsed.toFixed(1)}s</span></div>}
+      {!layout.clips.length&&!isRecording&&<p className="timeline-empty-hint">Record or import audio · multiple clips can overlap</p>}
+     </div></div>
+    </section>;
+   })}
+   <TimelinePlayhead positionSec={position} durationSec={timelineDuration} disabled={recording||recordPending} onPositionChange={seek}/>
+  </div></div><div className="arrangement-toolbar"><button type="button" className="arrangement-add-track" disabled={tracks.length>=MAX_TRACKS||recording||recordPending} onClick={addTrack}>Add track</button><button type="button" className="delete-snippet" disabled={!selected||recording||recordPending} onClick={removeSelected}>Delete clip <kbd>⌫</kbd></button><label className="timeline-zoom">Timeline zoom <input aria-label="Timeline zoom" type="range" min={20} max={120} step={10} value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label><span className="arrangement-cap-hint">Select a clip · Backspace/Delete removes it</span></div></div>
+  <aside className="sound-workspace" aria-label="Sound inspector">
+   <div className="inspector-tabs" role="tablist" aria-label="Clip tools">{(['clip','effects','ai'] as const).map(tab=><button key={tab} id={`tab-${tab}`} type="button" role="tab" aria-selected={panel===tab} aria-controls={`panel-${tab}`} tabIndex={panel===tab?0:-1} onClick={()=>setPanel(tab)} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();const tabs=['clip','effects','ai'] as const;const next=tabs[(tabs.indexOf(tab)+(e.key==='ArrowRight'?1:2))%3];setPanel(next);document.getElementById(`tab-${next}`)?.focus();}}}>{tab==='clip'?'Clip':tab==='effects'?'Effects':'AI preset'}</button>)}</div>
+   <div className="inspector-content">
+   <section className="daw-rack" hidden={panel==='ai'}>
+   <div className="section-heading"><h2>Clip inspector</h2><span>{selected?tracks.find(t=>t.id===selected.trackId)?.name:'Select a snippet'}</span></div>
+   {selected?<><div id="panel-clip" role="tabpanel" aria-labelledby="tab-clip" hidden={panel!=='clip'}><label className="clip-name">Clip name<input maxLength={80} value={selected.name} disabled={recording} onChange={e=>updateClip(selected.id,{name:e.target.value})}/></label><div className="clip-settings">
+    <label>Volume · {selected.volumeDb} dB<input aria-label="Clip volume" type="range" min={-36} max={12} value={selected.volumeDb} onChange={e=>updateClip(selected.id,{volumeDb:Number(e.target.value)})}/></label>
+    <label>Pan · {selected.pan===0?'Center':selected.pan<0?'Left':'Right'}<input aria-label="Clip pan" type="range" min={-1} max={1} step={.05} value={selected.pan} onChange={e=>updateClip(selected.id,{pan:Number(e.target.value)})}/></label>
+    <label>Fade in · {selected.fadeIn.toFixed(2)}s<input aria-label="Clip fade in" type="range" min={0} max={Math.min(5,(selected.trim.end-selected.trim.start)/2)} step={.01} value={Math.min(selected.fadeIn,(selected.trim.end-selected.trim.start)/2)} onChange={e=>updateClip(selected.id,{fadeIn:Number(e.target.value)},true)}/></label>
+    <label>Fade out · {selected.fadeOut.toFixed(2)}s<input aria-label="Clip fade out" type="range" min={0} max={Math.min(5,(selected.trim.end-selected.trim.start)/2)} step={.01} value={Math.min(selected.fadeOut,(selected.trim.end-selected.trim.start)/2)} onChange={e=>updateClip(selected.id,{fadeOut:Number(e.target.value)},true)}/></label>
+   </div><label className="monitor-switch"><input type="checkbox" checked={selected.muted} onChange={e=>updateClip(selected.id,{muted:e.target.checked})}/> Mute this clip</label>
+   <details className="voice-details"><summary>Voice measurements</summary>{features&&<FeatureList features={features} warnings={featureWarnings(features)}/>}</details>
+   <p className="clip-location">{clipTimelineStartSec(selected).toFixed(2)}s on timeline · {(selected.trim.end-selected.trim.start).toFixed(2)}s long</p>
+   <button className="inspector-delete" type="button" disabled={recording||recordPending} onClick={removeSelected}>Delete selected clip <kbd>⌫</kbd></button>
+   </div><div id="panel-effects" role="tabpanel" aria-labelledby="tab-effects" hidden={panel!=='effects'}>
+   <h2 className="section-title">Effects for this clip</h2><div className="effect-picker">{FIXED_ORDER.map(type=><button key={type} type="button" disabled={recording||selected.preset.chain.some(n=>n.type===type)} onClick={()=>addEffect(type)}>+ {type}</button>)}</div>
+   {selected.preset.chain.length>0&&<EffectsPanel compact preset={selected.preset} source={sources[selected.id]??'manual'} onParamChange={(id,key,value)=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.map(n=>n.id===id?{...n,params:{...n.params,[key]:value}}:n)})} onEnabledChange={(id,enabled)=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.filter(n=>n.id!==id)})} onReset={generated[selected.id]?()=>setSelectedPreset(structuredClone(generated[selected.id])):undefined}/>}</div>
+   </>:<p className="input-help">Click a clip in the timeline to edit its sound. Each snippet has its own settings and effect chain.</p>}
+  </section><section className="daw-prompt" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" hidden={panel!=='ai'}><PromptBox prompt={prompt} busy={generating||recording} hasTake={!!selected} onPromptChange={setPrompt} onGenerate={generate}/></section></div></aside>
+  <div className="studio-mixer"><TrackMixer tracks={tracks} mixes={mixes} onChange={(id,mix)=>setMixes(current=>({...current,[id]:mix}))}/></div>
+  </div>
+  <footer className="studio-status"><span>{recording?'● Recording':playing?'▶ Playing':selected?`Selected: ${selected.name}`:'Ready'}</span><span>{tracks.length} tracks · {clips.length} clips</span></footer>
+ </div></TimelineScale.Provider>;
 }
-
-function App() {
-  const recorderRef = React.useRef(new Recorder());
-  const recordBusyRef = React.useRef(false);
-  const generateLock = React.useRef(false);
-  const [prompt, setPrompt] = React.useState('');
-  const [preset, setPreset] = React.useState<Preset | null>(null);
-  const [aiPreset, setAiPreset] = React.useState<Preset | null>(null);
-  const [source, setSource] = React.useState<string | null>(null);
-  const [generateError, setGenerateError] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
-  const [playing, setPlaying] = React.useState(false);
-  const [dry, setDry] = React.useState(false);
-  const [masterDb, setMasterDb] = React.useState(0);
-  const [recording, setRecording] = React.useState(false);
-  const [vocalBuffer, setVocalBuffer] = React.useState<AudioBuffer | null>(null);
-  const [trim, setTrim] = React.useState<TrimRange | null>(null);
-  const [recordError, setRecordError] = React.useState<string | null>(null);
-  const [beatClip, setBeatClip] = React.useState<SessionAudioClip | null>(null);
-  const [beatImportBusy, setBeatImportBusy] = React.useState(false);
-  const [beatImportError, setBeatImportError] = React.useState<string | null>(null);
-  const [extraTracks, setExtraTracks] = React.useState<ExtraTrack[]>([]);
-  const [trackImportBusyId, setTrackImportBusyId] = React.useState<string | null>(null);
-  const [trackImportError, setTrackImportError] = React.useState<string | null>(null);
-  const [playheadSec, setPlayheadSec] = React.useState(0);
-  const [vocalClipStartSec, setVocalClipStartSec] = React.useState(0);
-  const [recordingElapsedSec, setRecordingElapsedSec] = React.useState(0);
-  const recordPerfStartRef = React.useRef<number | null>(null);
-  const engineRef = React.useRef<PlaybackEngine | null>(null);
-  if (engineRef.current == null) {
-    engineRef.current = new PlaybackEngine({
-      onEnded: () => {
-        setPlaying(false);
-        setPlayheadSec(0);
-      },
-    });
-  }
-  const engine = engineRef.current;
-
-  const features = React.useMemo(() => {
-    if (!vocalBuffer || !trim) {
-      return null;
-    }
-    return analyze(vocalBuffer, trim.start, trim.end);
-  }, [vocalBuffer, trim]);
-
-  React.useEffect(() => {
-    if (vocalBuffer && trim) {
-      engine.setVocal(
-        vocalBuffer,
-        trim,
-        timelineClipStartSec(vocalClipStartSec, trim),
-      );
-    } else {
-      engine.clearVocal();
-    }
-  }, [engine, vocalBuffer, trim, vocalClipStartSec]);
-
-  React.useEffect(() => {
-    if (beatClip) {
-      engine.setBeatClip(
-        beatClip.buffer,
-        beatClip.trim,
-        clipTimelineStartSec(beatClip),
-      );
-    } else {
-      engine.clearBeatClip();
-    }
-  }, [engine, beatClip]);
-
-  React.useEffect(() => {
-    for (const track of extraTracks) {
-      if (track.clip) {
-        engine.setAuxClip(
-          track.id,
-          track.clip.buffer,
-          track.clip.trim,
-          clipTimelineStartSec(track.clip),
-        );
-      } else {
-        engine.clearAuxClip(track.id);
-      }
-    }
-  }, [engine, extraTracks]);
-
-  const chainKey = chainSignature(preset);
-
-  React.useEffect(() => {
-    if (preset) {
-      engine.setPreset(preset, { pitchHz: features?.pitchHz ?? 0 });
-    }
-    // Rebuild only when effect ids or types change. Slider edits keep this key stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, chainKey, features?.pitchHz]);
-
-  React.useEffect(() => {
-    if (!playing) {
-      return;
-    }
-    let frame = 0;
-    const tick = () => {
-      setPlayheadSec(engine.getSeconds());
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [engine, playing]);
-
-  React.useEffect(() => {
-    if (!recording) {
-      recordPerfStartRef.current = null;
-      setRecordingElapsedSec(0);
-      return;
-    }
-    recordPerfStartRef.current = performance.now();
-    const interval = window.setInterval(() => {
-      const start = recordPerfStartRef.current;
-      if (start == null) {
-        return;
-      }
-      const elapsed = (performance.now() - start) / 1000;
-      setRecordingElapsedSec(elapsed);
-      setPlayheadSec(vocalClipStartSec + elapsed);
-    }, 50);
-    return () => window.clearInterval(interval);
-  }, [recording, vocalClipStartSec]);
-
-  function stopPlayback() {
-    engine.stop();
-    setPlaying(false);
-    if (!recording) {
-      setPlayheadSec(0);
-    }
-  }
-
-  function play() {
-    if (!canPlay || recording) {
-      return;
-    }
-    engine.play(playheadSec);
-    setPlaying(true);
-  }
-
-  async function importAudioFile(
-    file: File,
-    placeAtSec: number,
-    onClip: (clip: SessionAudioClip) => void,
-    setBusy: (busy: boolean) => void,
-    setError: (message: string | null) => void,
-  ) {
-    setBusy(true);
-    setError(null);
-    try {
-      const buffer = await decodeAudioFile(file);
-      if (playing) {
-        stopPlayback();
-      }
-      onClip(createSessionClip(buffer, file.name, placeAtSec));
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not decode audio file.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function startRecord() {
-    if (recordBusyRef.current || recording) {
-      return;
-    }
-    recordBusyRef.current = true;
-    setRecordError(null);
-    const recordAtSec = playing ? engine.getSeconds() : playheadSec;
-    stopPlayback();
-    setVocalClipStartSec(recordAtSec);
-    setPlayheadSec(recordAtSec);
-    try {
-      await recorderRef.current.start();
-      setRecording(true);
-    } catch (error) {
-      setRecording(false);
-      setRecordError(
-        error instanceof Error ? error.message : 'Could not access the microphone.',
-      );
-    } finally {
-      recordBusyRef.current = false;
-    }
-  }
-
-  async function stopRecord() {
-    if (recordBusyRef.current || !recording) {
-      return;
-    }
-    recordBusyRef.current = true;
-    setRecordError(null);
-    try {
-      const buffer = await recorderRef.current.stop();
-      const nextTrim = { start: 0, end: buffer.duration };
-      engine.setVocal(buffer, nextTrim, vocalClipStartSec);
-      setVocalBuffer(buffer);
-      setTrim(nextTrim);
-    } catch (error) {
-      setRecordError(error instanceof Error ? error.message : 'Recording failed.');
-    } finally {
-      setRecording(false);
-      recordBusyRef.current = false;
-    }
-  }
-
-  function transportStop() {
-    if (recording) {
-      void stopRecord();
-      return;
-    }
-    stopPlayback();
-  }
-
-  async function generate(event: React.FormEvent) {
-    event.preventDefault();
-    if (generateLock.current || !features || !prompt.trim()) {
-      return;
-    }
-    generateLock.current = true;
-    setBusy(true);
-    setGenerateError(null);
-    try {
-      const response = await fetch('/api/presets/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.trim(), features }),
-      });
-      const data = (await response.json().catch(() => null)) as {
-        preset?: Preset;
-        source?: unknown;
-        error?: unknown;
-      } | null;
-      if (!response.ok || !data?.preset || typeof data.source !== 'string') {
-        const message =
-          data && typeof data.error === 'string'
-            ? data.error
-            : 'Could not generate a preset.';
-        throw new Error(message);
-      }
-      const next = data.preset;
-      const rebuildsViaEffect = chainSignature(next) !== chainSignature(preset);
-      setAiPreset(structuredClone(next));
-      setPreset(next);
-      setSource(data.source);
-      if (!rebuildsViaEffect) {
-        engine.setPreset(next, { pitchHz: features?.pitchHz ?? 0 });
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error && !(error instanceof TypeError)
-          ? error.message
-          : 'Could not generate a preset.';
-      setGenerateError(message);
-    } finally {
-      generateLock.current = false;
-      setBusy(false);
-    }
-  }
-
-  function changeParam(id: string, key: string, value: number) {
-    setPreset((current) => {
-      if (!current) {
-        return current;
-      }
-      return {
-        ...current,
-        chain: current.chain.map((node) =>
-          node.id === id ? { ...node, params: { ...node.params, [key]: value } } : node,
-        ),
-      };
-    });
-    engine.updateParam(id, key, value);
-  }
-
-  function changeEnabled(id: string, enabled: boolean) {
-    setPreset((current) => {
-      if (!current) {
-        return current;
-      }
-      return {
-        ...current,
-        chain: current.chain.map((node) => (node.id === id ? { ...node, enabled } : node)),
-      };
-    });
-    engine.setEnabled(id, enabled);
-  }
-
-  function resetPreset() {
-    if (!aiPreset) {
-      return;
-    }
-    const next = structuredClone(aiPreset);
-    setPreset(next);
-    for (const node of next.chain) {
-      engine.setEnabled(node.id, node.enabled);
-      for (const [key, value] of Object.entries(node.params)) {
-        engine.updateParam(node.id, key, value);
-      }
-    }
-  }
-
-  const hasVocalClip =
-    vocalBuffer != null && trim != null && trimDurationSec(trim) > 0 && !recording;
-  const hasBeatClip = beatClip != null && trimDurationSec(beatClip.trim) > 0;
-  const hasAuxClip = extraTracks.some(
-    (track) => track.clip != null && trimDurationSec(track.clip.trim) > 0,
-  );
-  const canPlay = (hasVocalClip || hasBeatClip || hasAuxClip) && !recording;
-  const canAddTrack = canAddSessionLane(extraTracks);
-  const sortedExtraTracks = sortExtraTracks(extraTracks);
-
-  const vocalClipEndSec =
-    vocalBuffer && trim && !recording
-      ? timelineClipStartSec(vocalClipStartSec, trim) + trimDurationSec(trim)
-      : 0;
-  const recordingEndSec = recording ? vocalClipStartSec + recordingElapsedSec : 0;
-  const beatClipEndSec = beatClip ? clipTimelineEndSec(beatClip) : 0;
-  const auxClipEndSec = extraTracks.map((track) =>
-    track.clip ? clipTimelineEndSec(track.clip) : 0,
-  );
-  const timelineDurationSec = computeTimelineDurationSec(
-    [vocalClipEndSec, recordingEndSec, beatClipEndSec, ...auxClipEndSec].filter((n) => n > 0),
-  );
-
-  function seekTimeline(sec: number) {
-    const clamped = Math.max(0, Math.min(sec, timelineDurationSec));
-    if (playing) {
-      engine.play(clamped);
-    } else {
-      engine.seek(clamped);
-    }
-    setPlayheadSec(clamped);
-  }
-
-  function addTrack() {
-    setExtraTracks((current) => {
-      const next = createExtraTrack(current);
-      return next ? [...current, next] : current;
-    });
-  }
-
-  function removeTrack(id: string) {
-    engine.clearAuxClip(id);
-    setExtraTracks((current) => current.filter((track) => track.id !== id));
-  }
-
-  function updateBeatClip(updater: (clip: SessionAudioClip) => SessionAudioClip) {
-    setBeatClip((current) => (current ? updater(current) : current));
-  }
-
-  function updateTrackClip(
-    trackId: string,
-    updater: (clip: SessionAudioClip) => SessionAudioClip,
-  ) {
-    setExtraTracks((current) =>
-      current.map((track) =>
-        track.id === trackId && track.clip ? { ...track, clip: updater(track.clip) } : track,
-      ),
-    );
-  }
-
-  return (
-    <div className="daw">
-      <TopBar
-        playing={playing}
-        recording={recording}
-        canPlay={canPlay}
-        positionSec={playheadSec}
-        dry={dry}
-        masterDb={masterDb}
-        onPlay={play}
-        onRecord={() => {
-          void startRecord();
-        }}
-        onStop={transportStop}
-        onDryChange={(next) => {
-          setDry(next);
-          engine.setBypass(next);
-        }}
-        onMasterDbChange={setMasterDb}
-      />
-      <div className="daw-arrangement">
-        <div className="arrangement-h-scroll">
-          <div
-            className="arrangement-canvas"
-            style={{ '--timeline-sec': timelineDurationSec } as React.CSSProperties}
-          >
-            <TimelineRuler
-              durationSec={timelineDurationSec}
-              seekDisabled={recording}
-              onSeek={seekTimeline}
-            />
-            <BeatRow
-              timelineDurationSec={timelineDurationSec}
-              clip={beatClip}
-              importBusy={beatImportBusy}
-              importError={beatImportError}
-              onImportFile={(file) => {
-                void importAudioFile(
-                  file,
-                  playheadSec,
-                  setBeatClip,
-                  setBeatImportBusy,
-                  setBeatImportError,
-                );
-              }}
-              onTrimChange={(next) => {
-                if (playing) {
-                  stopPlayback();
-                }
-                updateBeatClip((clip) => ({ ...clip, trim: next }));
-              }}
-              onClipTimelineStartChange={(timelineStart) => {
-                if (playing) {
-                  stopPlayback();
-                }
-                updateBeatClip((clip) => ({
-                  ...clip,
-                  clipStartSec: Math.max(0, timelineStart - clip.trim.start),
-                }));
-              }}
-              onClearClip={() => {
-                if (playing) {
-                  stopPlayback();
-                }
-                setBeatClip(null);
-                setBeatImportError(null);
-              }}
-            />
-            <VocalRow
-              recording={recording}
-              timelineDurationSec={timelineDurationSec}
-              clipStartSec={vocalClipStartSec}
-              recordingElapsedSec={recordingElapsedSec}
-              trim={trim}
-              recordError={recordError}
-              buffer={vocalBuffer}
-              onTrimChange={(next) => {
-                if (playing) {
-                  stopPlayback();
-                }
-                setTrim(next);
-              }}
-              onClipTimelineStartChange={(timelineStart) => {
-                if (playing) {
-                  stopPlayback();
-                }
-                if (!trim) {
-                  return;
-                }
-                setVocalClipStartSec(Math.max(0, timelineStart - trim.start));
-              }}
-            />
-            {sortedExtraTracks.map((track) => (
-              <AudioImportRow
-                key={track.id}
-                trackLabel={`Track ${track.laneNumber}`}
-                ariaLabel={`Track ${track.laneNumber}`}
-                timelineDurationSec={timelineDurationSec}
-                clip={track.clip}
-                importBusy={trackImportBusyId === track.id}
-                importError={trackImportBusyId === track.id ? trackImportError : null}
-                onImportFile={(file) => {
-                  setTrackImportError(null);
-                  void importAudioFile(
-                    file,
-                    playheadSec,
-                    (clip) => {
-                      setExtraTracks((current) =>
-                        current.map((row) => (row.id === track.id ? { ...row, clip } : row)),
-                      );
-                    },
-                    (busy) => setTrackImportBusyId(busy ? track.id : null),
-                    setTrackImportError,
-                  );
-                }}
-                onTrimChange={(next) => {
-                  if (playing) {
-                    stopPlayback();
-                  }
-                  updateTrackClip(track.id, (clip) => ({ ...clip, trim: next }));
-                }}
-                onClipTimelineStartChange={(timelineStart) => {
-                  if (playing) {
-                    stopPlayback();
-                  }
-                  updateTrackClip(track.id, (clip) => ({
-                    ...clip,
-                    clipStartSec: Math.max(0, timelineStart - clip.trim.start),
-                  }));
-                }}
-                onRemoveTrack={() => removeTrack(track.id)}
-                onClearClip={
-                  track.clip
-                    ? () => {
-                        if (playing) {
-                          stopPlayback();
-                        }
-                        setExtraTracks((current) =>
-                          current.map((row) =>
-                            row.id === track.id ? { ...row, clip: null } : row,
-                          ),
-                        );
-                      }
-                    : undefined
-                }
-              />
-            ))}
-            <TimelinePlayhead
-              positionSec={playheadSec}
-              durationSec={timelineDurationSec}
-              disabled={recording}
-              onPositionChange={seekTimeline}
-            />
-          </div>
-        </div>
-        <div className="arrangement-toolbar">
-          <button
-            type="button"
-            className="arrangement-add-track"
-            onClick={addTrack}
-            disabled={!canAddTrack}
-          >
-            Add track
-          </button>
-          {!canAddTrack ? (
-            <span className="arrangement-cap-hint">Maximum of {MAX_SESSION_LANES} tracks</span>
-          ) : null}
-        </div>
-      </div>
-      <div className="daw-rack">
-        {features ? (
-          <>
-            <h2 className="section-title">Voice measurements</h2>
-            <FeatureList features={features} warnings={featureWarnings(features)} />
-          </>
-        ) : null}
-        {preset ? (
-          <EffectsPanel
-            preset={preset}
-            source={source}
-            onParamChange={changeParam}
-            onEnabledChange={changeEnabled}
-            onReset={resetPreset}
-          />
-        ) : null}
-      </div>
-      <div className="daw-prompt">
-        <PromptBox
-          prompt={prompt}
-          busy={busy}
-          hasTake={vocalBuffer != null}
-          onPromptChange={setPrompt}
-          onGenerate={generate}
-        />
-        {generateError ? (
-          <p className="form-error" role="alert">
-            {generateError}
-          </p>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
