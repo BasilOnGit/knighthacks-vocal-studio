@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --watch src/server.js",
-    "start": "node --env-file-if-exists=.env src/server.js",
-    "test": "node --test"
+    "dev": "node --experimental-strip-types --env-file-if-exists=.env --watch src/server.js",
+    "start": "node --experimental-strip-types --env-file-if-exists=.env src/server.js",
+    "test": "node --experimental-strip-types --test"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
   }
 }

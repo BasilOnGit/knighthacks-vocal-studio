@@ -13,12 +13,13 @@ In a second terminal, run `npm run dev:web` and open the URL Vite prints.
 Copy `apps/api/.env.example` to `apps/api/.env` when configuring integrations. Never commit tokens or database credentials.
 
 ## What is included
-- React + TypeScript + Vite frontend with a vocal-style prompt form.
-- Node API with health endpoint, prompt validation, request-size limit, and explicit unimplemented AI response.
-- Hugging Face and Neon environment placeholders.
-- Proposed PostgreSQL preset schema and a team build plan.
+- Record a vocal, trim it on a waveform, and play the trimmed clip.
+- Measure the take (loudness, brightness, pitch) and show warnings.
+- Apply an editable effect chain (EQ, compressor, saturation, chorus, delay, reverb) with a dry/processed toggle.
+- Node API that validates the prompt and voice measurements, then returns a labeled fallback preset until `HF_TOKEN` and `HF_MODEL` are set.
+- Hugging Face and Neon environment placeholders, plus the team build plan.
 
-This is a starter scaffold, not a finished audio editor. AI generation currently returns HTTP 501. Recording, effects, export, and persistence still need implementation. Neon is the database; the Node server is the backend application.
+Beat upload, master volume, export, and live model generation are not in this version. Neon is the database; the Node server is the backend application.
 
 ## Checks
 `npm test` checks backend prompt validation.
