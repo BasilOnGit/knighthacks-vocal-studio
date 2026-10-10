@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validatePrompt, validateFeatures, generatePreset } from '../src/preset.js';
+import {
+  validatePrompt,
+  validateFeatures,
+  generatePreset,
+  ensureMixProtocol,
+  promptRejectsSpace,
+} from '../src/preset.js';
 import { fakeFeatures } from '../../../shared/fakePreset.ts';
 import { validatePreset } from '../../../shared/validate.ts';
 
@@ -78,7 +84,8 @@ test('generatePreset returns a validated model preset', async () => {
       assert.equal(body.model, 'Qwen/Qwen2.5-7B-Instruct');
       assert.equal(body.response_format.type, 'json_object');
       assert.equal(init.headers.Authorization, 'Bearer test-token');
-      assert.match(body.messages[0].content, /reverb: decaySec 0\.3 to 5/);
+      assert.match(body.messages[0].content, /gate: thresholdDb -80 to -10/);
+      assert.match(body.messages[0].content, /deesser: freqHz 4000 to 10000/);
       assert.match(body.messages[1].content, /dreamy spacious vocals/);
       return jsonResponse(`\`\`\`json\n${JSON.stringify(dreamyPreset)}\n\`\`\``);
     }),
@@ -88,7 +95,7 @@ test('generatePreset returns a validated model preset', async () => {
   assert.equal(result.preset.name, 'Dreamy');
   assert.deepEqual(
     result.preset.chain.map((node) => node.type),
-    ['delay', 'reverb'],
+    ['eq', 'reverb', 'delay'],
   );
   assert.equal(result.preset.chain[1].params.mix, 0.4);
   assert.equal(result.preset.chain[1].params.preDelayMs, 20);
@@ -148,11 +155,22 @@ test('clamps params that are out of range', () => {
   const preset = validatePreset({
     name: 'Loud',
     explanation: 'Too much air',
-    chain: [{ type: 'eq', params: { lowCutHz: 9999, highShelfDb: -100 } }],
+    chain: [{ type: 'eq', params: { lowCutHz: 9999, airDb: -100 } }],
   });
   assert.equal(preset.chain.length, 1);
-  assert.equal(preset.chain[0].params.lowCutHz, 300);
-  assert.equal(preset.chain[0].params.highShelfDb, -6);
+  assert.equal(preset.chain[0].params.lowCutHz, 400);
+  assert.equal(preset.chain[0].params.airDb, -12);
+});
+
+test('accepts autotune in the chain', () => {
+  const preset = validatePreset({
+    name: 'Trap',
+    explanation: 'Tuned vocal',
+    chain: [{ type: 'autotune', params: { mix: 0.8, speed: 0.9 } }],
+  });
+  assert.equal(preset.chain[0].type, 'autotune');
+  assert.equal(preset.chain[0].params.mix, 0.8);
+  assert.equal(preset.chain[0].params.snap, 0.85);
 });
 
 test('drops unknown effect types', () => {
@@ -160,7 +178,7 @@ test('drops unknown effect types', () => {
     name: 'Odd',
     explanation: 'Unknown gear',
     chain: [
-      { type: 'autotune', params: { amount: 1 } },
+      { type: 'flanger', params: { amount: 1 } },
       { type: 'reverb', params: { mix: 0.2 } },
     ],
   });
@@ -170,19 +188,39 @@ test('drops unknown effect types', () => {
   );
 });
 
-test('keeps the first node of a duplicate type', () => {
+test('keeps duplicate effect types with sequential ids', () => {
   const preset = validatePreset({
     name: 'Echo',
     explanation: 'Two delays',
     chain: [
-      { type: 'delay', id: 'delay-a', enabled: false, params: { timeMs: 200 } },
-      { type: 'delay', id: 'delay-b', params: { timeMs: 500 } },
+      { type: 'delay', enabled: false, params: { timeMs: 200 } },
+      { type: 'delay', params: { timeMs: 500 } },
     ],
   });
-  assert.equal(preset.chain.length, 1);
-  assert.equal(preset.chain[0].id, 'delay-a');
+  assert.equal(preset.chain.length, 2);
+  assert.equal(preset.chain[0].id, 'delay-1');
+  assert.equal(preset.chain[1].id, 'delay-2');
   assert.equal(preset.chain[0].enabled, false);
   assert.equal(preset.chain[0].params.timeMs, 200);
+  assert.equal(preset.chain[1].params.timeMs, 500);
+});
+
+test('keeps two eq nodes in model order', () => {
+  const preset = validatePreset({
+    name: 'Polish',
+    explanation: 'Cut then boost',
+    chain: [
+      { type: 'eq', params: { lowCutHz: 100, bodyDb: -3 } },
+      { type: 'compressor', params: { ratio: 3 } },
+      { type: 'eq', params: { presenceDb: 2 } },
+    ],
+  });
+  assert.deepEqual(
+    preset.chain.map((node) => node.type),
+    ['eq', 'compressor', 'eq'],
+  );
+  assert.equal(preset.chain[0].id, 'eq-1');
+  assert.equal(preset.chain[2].id, 'eq-2');
 });
 
 test('fills missing params and assigns a stable id', () => {
@@ -196,10 +234,10 @@ test('fills missing params and assigns a stable id', () => {
   assert.equal(preset.chain[0].params.lowCutHz, 90);
   assert.equal(preset.chain[0].params.lowShelfDb, 0);
   assert.equal(preset.chain[0].params.presenceDb, 0);
-  assert.equal(preset.chain[0].params.highShelfDb, 0);
+  assert.equal(preset.chain[0].params.airDb, 0);
 });
 
-test('sorts the chain into FIXED_ORDER', () => {
+test('preserves model chain order', () => {
   const preset = validatePreset({
     name: 'Wide',
     explanation: 'Space',
@@ -211,27 +249,22 @@ test('sorts the chain into FIXED_ORDER', () => {
   });
   assert.deepEqual(
     preset.chain.map((node) => node.type),
-    ['eq', 'delay', 'reverb'],
+    ['reverb', 'eq', 'delay'],
   );
 });
 
-test('caps the chain at five effects', () => {
+test('caps the chain at ten effects', () => {
   const preset = validatePreset({
     name: 'Full',
     explanation: 'Everything',
-    chain: [
-      { type: 'reverb', params: {} },
-      { type: 'delay', params: {} },
-      { type: 'chorus', params: {} },
-      { type: 'saturation', params: {} },
-      { type: 'compressor', params: {} },
-      { type: 'eq', params: {} },
-    ],
+    chain: Array.from({ length: 11 }, (_, index) => ({
+      type: 'eq',
+      params: { lowCutHz: 80 + index },
+    })),
   });
-  assert.deepEqual(
-    preset.chain.map((node) => node.type),
-    ['compressor', 'saturation', 'chorus', 'delay', 'reverb'],
-  );
+  assert.equal(preset.chain.length, 10);
+  assert.equal(preset.chain[0].params.lowCutHz, 80);
+  assert.equal(preset.chain[9].params.lowCutHz, 89);
 });
 
 test('throws when the preset shape is invalid', () => {
@@ -243,5 +276,40 @@ test('throws when the preset shape is invalid', () => {
       explanation: 'Y',
       chain: [{ type: 'eq', params: { lowCutHz: 'hot' } }],
     }),
+  );
+});
+
+test('promptRejectsSpace detects dry requests', () => {
+  assert.equal(promptRejectsSpace('dry vocal, no reverb'), true);
+  assert.equal(promptRejectsSpace('dreamy spacious vocals'), false);
+});
+
+test('ensureMixProtocol prepends eq and appends reverb when missing', () => {
+  const preset = ensureMixProtocol(
+    validatePreset({
+      name: 'Bare',
+      explanation: 'Only compression',
+      chain: [{ type: 'compressor', params: { ratio: 3 } }],
+    }),
+    'warm pop vocal',
+  );
+  assert.deepEqual(
+    preset.chain.map((node) => node.type),
+    ['eq', 'compressor', 'reverb'],
+  );
+});
+
+test('ensureMixProtocol skips reverb when the prompt rejects space', () => {
+  const preset = ensureMixProtocol(
+    validatePreset({
+      name: 'Dry',
+      explanation: 'No space',
+      chain: [{ type: 'compressor', params: { ratio: 2 } }],
+    }),
+    'bone-dry vocal, no reverb',
+  );
+  assert.deepEqual(
+    preset.chain.map((node) => node.type),
+    ['eq', 'compressor'],
   );
 });

@@ -9,6 +9,15 @@ function formatValue(value: number, step: number): string {
   return step < 1 ? value.toFixed(2) : String(value);
 }
 
+function effectTypeLabel(node: EffectNode, preset: Preset): string {
+  const siblings = preset.chain.filter((entry) => entry.type === node.type);
+  if (siblings.length <= 1) {
+    return node.type;
+  }
+  const index = siblings.findIndex((entry) => entry.id === node.id) + 1;
+  return `${node.type} ${index}`;
+}
+
 export function EffectsPanel({
   preset,
   source,
@@ -34,6 +43,7 @@ export function EffectsPanel({
           <EffectCard
             key={node.id}
             node={node}
+            typeLabel={effectTypeLabel(node, preset)}
             onParamChange={onParamChange}
             onEnabledChange={onEnabledChange}
           />
@@ -48,10 +58,12 @@ export function EffectsPanel({
 
 function EffectCard({
   node,
+  typeLabel,
   onParamChange,
   onEnabledChange,
 }: {
   node: EffectNode;
+  typeLabel: string;
   onParamChange: (id: string, key: string, value: number) => void;
   onEnabledChange: (id: string, enabled: boolean) => void;
 }) {
@@ -60,7 +72,7 @@ function EffectCard({
     <li>
       <div className="effect-head">
         <div>
-          <strong>{node.type}</strong>
+          <strong>{typeLabel}</strong>
           {node.why ? <span> — {node.why}</span> : null}
         </div>
         <label className="transport-toggle">

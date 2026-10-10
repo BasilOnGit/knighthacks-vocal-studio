@@ -19,7 +19,7 @@ export const fakePreset: Preset = {
       id: 'eq-1',
       type: 'eq',
       enabled: true,
-      params: fillParams('eq', { lowCutHz: 90, highShelfDb: 3 }),
+      params: fillParams('eq', { lowCutHz: 90, airDb: 3 }),
       why: 'Remove rumble, add air',
     },
     {

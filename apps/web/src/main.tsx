@@ -126,11 +126,11 @@ function App() {
 
   React.useEffect(() => {
     if (preset) {
-      engine.setPreset(preset);
+      engine.setPreset(preset, { pitchHz: features?.pitchHz ?? 0 });
     }
     // Rebuild only when effect ids or types change. Slider edits keep this key stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, chainKey]);
+  }, [engine, chainKey, features?.pitchHz]);
 
   React.useEffect(() => {
     if (!playing) {
@@ -285,7 +285,7 @@ function App() {
       setPreset(next);
       setSource(data.source);
       if (!rebuildsViaEffect) {
-        engine.setPreset(next);
+        engine.setPreset(next, { pitchHz: features?.pitchHz ?? 0 });
       }
     } catch (error) {
       const message =

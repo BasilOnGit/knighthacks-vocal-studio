@@ -1,6 +1,9 @@
 export type EffectType =
+  | 'gate'
+  | 'autotune'
   | 'eq'
   | 'compressor'
+  | 'deesser'
   | 'saturation'
   | 'chorus'
   | 'delay'
@@ -52,8 +55,12 @@ export interface Engine {
   getVocalInput(): VocalInputNode;
 }
 
+export interface VocalChainOptions {
+  pitchHz?: number;
+}
+
 export interface VocalChain {
-  setChain(preset: Preset): void;
+  setChain(preset: Preset, options?: VocalChainOptions): void;
   updateParam(id: string, key: string, value: number): void;
   setEnabled(id: string, on: boolean): void;
 }

@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { FIXED_ORDER, MAX_EFFECTS, PARAM_RANGES, fillParams } from './params.ts';
+import { MAX_EFFECTS, PARAM_RANGES, fillParams } from './params.ts';
 import type { EffectNode, EffectType, Preset } from './types';
 
-const effectTypes = new Set<string>(FIXED_ORDER);
+const effectTypes = new Set<string>(Object.keys(PARAM_RANGES));
 
 const chainEntrySchema = z.object({
   type: z.string(),
@@ -37,14 +37,13 @@ function clampParams(type: EffectType, params: Record<string, number>): Record<s
 
 export function validatePreset(input: unknown): Preset {
   const parsed = presetSchema.parse(input);
-  const seen = new Set<EffectType>();
+  const typeCounts = new Map<EffectType, number>();
   const kept: Array<z.infer<typeof chainEntrySchema>> = [];
 
   for (const entry of parsed.chain) {
-    if (!isEffectType(entry.type) || seen.has(entry.type)) {
+    if (!isEffectType(entry.type)) {
       continue;
     }
-    seen.add(entry.type);
     kept.push(entry);
     if (kept.length === MAX_EFFECTS) {
       break;
@@ -53,8 +52,10 @@ export function validatePreset(input: unknown): Preset {
 
   const chain: EffectNode[] = kept.map((entry) => {
     const type = entry.type as EffectType;
+    const index = (typeCounts.get(type) ?? 0) + 1;
+    typeCounts.set(type, index);
     const node: EffectNode = {
-      id: entry.id ?? `${type}-1`,
+      id: entry.id ?? `${type}-${index}`,
       type,
       enabled: entry.enabled ?? true,
       params: clampParams(type, entry.params),
@@ -64,8 +65,6 @@ export function validatePreset(input: unknown): Preset {
     }
     return node;
   });
-
-  chain.sort((a, b) => FIXED_ORDER.indexOf(a.type) - FIXED_ORDER.indexOf(b.type));
 
   return {
     name: parsed.name,
