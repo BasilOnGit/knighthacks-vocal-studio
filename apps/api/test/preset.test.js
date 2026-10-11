@@ -7,6 +7,7 @@ import {
   ensureMixProtocol,
   promptRejectsSpace,
   validateCurrentTrackVolume,
+  validateOtherTracks,
 } from '../src/preset.js';
 import { fakeFeatures } from '../../../shared/fakePreset.ts';
 import { validatePreset } from '../../../shared/validate.ts';
@@ -73,11 +74,64 @@ test('generatePreset returns the fallback without calling the model when credent
   assert.ok(result.preset.trackVolumeDb <= 0);
 });
 
+test('validateOtherTracks normalizes snapshots', () => {
+  const out = validateOtherTracks({
+    otherTracks: [
+      {
+        name: 'BG vocal',
+        role: 'vocal',
+        clipCount: 2,
+        trackVolumeDb: 99,
+        presetName: 'Stack',
+        explanation: 'Harmony layer',
+        chain: [{ type: 'reverb', params: { mix: 200 }, why: 'Room' }],
+        lastPrompt: 'soft background',
+      },
+    ],
+  });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].trackVolumeDb, 6);
+  assert.equal(out[0].chain[0].params.mix, 100);
+});
+
 test('validateCurrentTrackVolume clamps and rejects bad values', () => {
   assert.equal(validateCurrentTrackVolume({}), undefined);
   assert.equal(validateCurrentTrackVolume({ currentTrackVolumeDb: 3 }), 3);
   assert.equal(validateCurrentTrackVolume({ currentTrackVolumeDb: 99 }), 6);
   assert.throws(() => validateCurrentTrackVolume({ currentTrackVolumeDb: 'loud' }));
+});
+
+test('generatePreset includes other tracks in the user message', async () => {
+  let userContent = '';
+  await generatePreset(
+    'another background vocal like the first',
+    fakeFeatures,
+    {
+      ...modelOptions(async (_url, init) => {
+        userContent = JSON.parse(init.body).messages[1].content;
+        return jsonResponse(
+          JSON.stringify({
+            name: 'BG 2',
+            explanation: 'Matches first BG',
+            chain: [{ type: 'eq', params: { lowCutHz: 95 }, why: 'Match' }],
+          }),
+        );
+      }),
+      otherTracks: [
+        {
+          name: 'BG 1',
+          role: 'vocal',
+          clipCount: 1,
+          trackVolumeDb: -4,
+          presetName: 'BG stack',
+          explanation: 'Soft harmony',
+          chain: [{ type: 'reverb', params: { mix: 18, sizePct: 20, tonePct: 25 }, why: 'Room' }],
+        },
+      ],
+    },
+  );
+  assert.match(userContent, /Other tracks already/);
+  assert.match(userContent, /BG 1/);
 });
 
 test('generatePreset keeps current fader on follow-up when model omits trackVolumeDb', async () => {
@@ -114,6 +168,7 @@ test('generatePreset returns a validated model preset', async () => {
       assert.match(body.messages[0].content, /denoise — place first when used/);
       assert.match(body.messages[0].content, /deesser:.*freqHz 4000 to 16000/);
       assert.match(body.messages[1].content, /dreamy spacious vocals/);
+      assert.doesNotMatch(body.messages[1].content, /Other tracks already/);
       return jsonResponse(`\`\`\`json\n${JSON.stringify(dreamyPreset)}\n\`\`\``);
     }),
   );
@@ -197,8 +252,9 @@ test('accepts autotune in the chain', () => {
     chain: [{ type: 'autotune', params: { mix: 0.8, speed: 0.9 } }],
   });
   assert.equal(preset.chain[0].type, 'autotune');
-  assert.equal(preset.chain[0].params.mix, 80);
-  assert.equal(preset.chain[0].params.snap, 0.85);
+  assert.equal(preset.chain[0].params.mix, 100);
+  assert.ok(Math.abs(preset.chain[0].params.speed - 0.72) < 0.001);
+  assert.ok(Math.abs(preset.chain[0].params.snap - 0.68) < 0.001);
 });
 
 test('drops unknown effect types', () => {

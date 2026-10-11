@@ -21,6 +21,9 @@ function setup() {
     rampTo(value) {
       this.value = value;
     }
+    setValueAtTime(value) {
+      this.value = value;
+    }
     cancelScheduledValues() {}
   }
   class Node {

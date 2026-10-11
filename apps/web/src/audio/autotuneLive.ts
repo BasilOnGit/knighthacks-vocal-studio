@@ -1,3 +1,4 @@
+import { normalizeAutotuneMixParams } from '../../../../shared/effectMixPolicy.ts';
 import { defaultParams, fillParams } from '../../../../shared/params';
 import { PitchCorrector } from './pitchCorrector';
 
@@ -10,11 +11,11 @@ export class AutotuneLiveCorrector {
   private readonly corrector = new PitchCorrector({ medianSize: 3 });
 
   constructor(params: Record<string, number> = {}) {
-    this.live = fillParams('autotune', params);
+    this.live = normalizeAutotuneMixParams(params);
   }
 
   setParams(params: Record<string, number>): void {
-    this.live = fillParams('autotune', params);
+    this.live = normalizeAutotuneMixParams(params);
   }
 
   reset(): void {

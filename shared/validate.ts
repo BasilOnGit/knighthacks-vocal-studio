@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { decaySecToSizePct } from './bandlabScale.ts';
 import { MAX_EFFECTS, PARAM_RANGES, fillParams } from './params.ts';
+import { normalizeAutotuneMixParams } from './effectMixPolicy.ts';
 import { clampTrackVolumeDb } from './trackVolume.ts';
 import type { EffectNode, EffectType, Preset } from './types';
 
@@ -72,7 +73,8 @@ function migrateLegacyParams(type: EffectType, params: Record<string, number>): 
 
 function clampParams(type: EffectType, params: Record<string, number>): Record<string, number> {
   const migrated = migrateLegacyParams(type, params);
-  const filled = fillParams(type, migrated);
+  const filled =
+    type === 'autotune' ? normalizeAutotuneMixParams(migrated) : fillParams(type, migrated);
   const spec = PARAM_RANGES[type];
   const clamped: Record<string, number> = {};
   for (const [key, range] of Object.entries(spec)) {

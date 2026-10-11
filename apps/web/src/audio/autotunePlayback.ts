@@ -1,5 +1,6 @@
 import { percentToUnit } from '../../../../shared/bandlabScale.ts';
-import { defaultParams } from '../../../../shared/params';
+import { normalizeAutotuneMixParams } from '../../../../shared/effectMixPolicy.ts';
+import { defaultParams, fillParams } from '../../../../shared/params';
 import { FormantAutotune } from './formantAutotune';
 import { PitchCorrector, PLAYBACK_PITCH_LOOKBACK_SEC } from './pitchCorrector';
 import { pitchHzAtTime, type PitchFrame } from './pitchTrack';
@@ -33,7 +34,7 @@ export class AutotunePlayback {
   private effectEnabled = true;
 
   constructor(params: Record<string, number>) {
-    this.live = { ...params };
+    this.live = normalizeAutotuneMixParams(params);
     this.shifter = new FormantAutotune({ quality: 'studio' });
     this.shifter.setMix(autotuneMix01(this.live));
     this.shifter.setPitchSemitones(readAutotuneParam(this.live, 'shiftSemitones'), 0);
@@ -92,10 +93,10 @@ export class AutotunePlayback {
   }
 
   updateParam(key: string, value: number): void {
-    this.live[key] = value;
+    this.live = normalizeAutotuneMixParams(fillParams('autotune', { ...this.live, [key]: value }));
     if (key === 'mix') {
       if (this.effectEnabled) {
-        this.shifter.setMix(percentToUnit(value));
+        this.shifter.setMix(autotuneMix01(this.live));
       }
     } else if (key === 'shiftSemitones' && this.effectEnabled) {
       this.shifter.setPitchSemitones(this.corrector.correction + value);

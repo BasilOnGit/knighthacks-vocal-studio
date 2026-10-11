@@ -213,7 +213,7 @@ function drillSeed(): Preset {
     {
       slot: 'tune',
       type: 'autotune',
-      params: { mix: 75, snap: 0.9, retuneSpeed: 0.85, key: 0, scaleMajor: 0 },
+      params: { mix: 100, snap: 0.9, retuneSpeed: 0.64, key: 0, scaleMajor: 0 },
       why: 'Moderate tuning, not full T-Pain',
     },
     {

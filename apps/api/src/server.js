@@ -4,6 +4,7 @@ import {
   validateFeatures,
   validateCurrentPreset,
   validateCurrentTrackVolume,
+  validateOtherTracks,
   validateHistory,
   generatePreset,
 } from './preset.js';
@@ -40,12 +41,14 @@ const server = createServer(async (req, res) => {
     let features;
     let currentPreset;
     let currentTrackVolumeDb;
+    let otherTracks;
     let history;
     try {
       prompt = validatePrompt(body);
       features = validateFeatures(body.features);
       currentPreset = validateCurrentPreset(body);
       currentTrackVolumeDb = validateCurrentTrackVolume(body);
+      otherTracks = validateOtherTracks(body);
       history = validateHistory(body);
     } catch (error) {
       return send(res, 400, { error: error.message });
@@ -53,7 +56,12 @@ const server = createServer(async (req, res) => {
     send(
       res,
       200,
-      await generatePreset(prompt, features, { currentPreset, currentTrackVolumeDb, history }),
+      await generatePreset(prompt, features, {
+        currentPreset,
+        currentTrackVolumeDb,
+        otherTracks,
+        history,
+      }),
     );
   } catch (error) {
     send(res, error.status || 500, { error: error.status ? error.message : 'Unable to generate preset' });

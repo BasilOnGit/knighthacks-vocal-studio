@@ -22,12 +22,18 @@ autotune — trap, hyperpop, T-Pain, polished pitch, modern R&B, "perfect" vocal
 eq — almost always at least once for HPF and tone; subtractive early (mud, rumble), additive when bright/airy/pop/radio.
 compressor — almost always for vocal level control; lighter for intimate, heavier for punch/aggressive.
 rider — even level without heavy squash: podcast, broadcast, whisper-to-loud singing, "smooth" dynamics; use after compressor when crestDb is high or loudness swings. Skip when user wants punchy/aggressive compression character.
-deesser — default for sung vocals; set freqHz in the air band (8–14 kHz) so it tames sizzle without dulling 3–6 kHz. Reduce mix if centroidHz is already very high.
+deesser — default for sung vocals; set freqHz in the air band (8–14 kHz) so it tames sizzle without dulling 3–6 kHz. mix is strength (60–85 typical), not a dry/wet blend; raise thresholdDb if the take is already dull.
 saturation — warmth, grit, lo-fi, tape, edge; omit for clean/polished vocals; keep drive/mix low unless the user wants distortion.
 chorus — wide, lush, 80s, dreamy, modulated thickness; skip for dry intimate rap or podcast tone.
 doubler — subtle width/thickness, "double tracked", stacked vocal, Haas width without obvious chorus; lighter than chorus. Skip for mono/dry podcast.
 delay — slap, echo, spacious, rhythmic; keep mix low on lead vocals unless prompt emphasizes it. Set pingPong to 1 for stereo bounce (dream pop, EDM, wide mixes); 0 for mono slap (rap, intimate).
 reverb — space and depth; skip only when user wants dry/bone-dry/no reverb. Short decay for intimate, long for anthem/dreamy.`;
+
+export const EFFECT_MIX_RULES = `EFFECT MIX (avoid stacked / double vocals):
+autotune — mix is dry+wet parallel. NEVER use partial mix (no 30–70%). Use mix 100 whenever tuning is audible, or omit autotune / mix 0. Soften tuning with lower retuneSpeed (0.35–0.8) and snap (0.65–0.9), not mix.
+compressor — serial dynamics: keep mix 100. Use lower ratio/threshold for lighter compression, not parallel mix.
+deesser — mix is sibilance-band strength only (not dry/wet). Prefer 60–85 on sung vocals; ease off with higher thresholdDb, not mix near 50 unless sibilance is very mild.
+saturation, delay, reverb, chorus, doubler — partial mix is normal (wet send level).`;
 
 export const PROMPT_INTERPRETATION = `INTERPRET THE USER PROMPT (do this before building the chain):
 1. Extract genre, mood, era, and references (e.g. "Billie Eilish whisper", "2000s pop punk", "podcast clean").
@@ -35,7 +41,8 @@ export const PROMPT_INTERPRETATION = `INTERPRET THE USER PROMPT (do this before 
 3. Choose effects that produce those traits — not every effect on every preset.
 4. Order the chain so each step makes sense for that story (document briefly in each why).
 5. Set trackVolumeDb (−36 to +6 dB) when the prompt implies level: whisper/intimate/dreamy lower (−2 to −5), upfront/rap/anthem higher (+1 to +4), podcast/spoken near 0; nudge down if loudnessDb is hot, up if the take is quiet.
-6. Use voice features to tune parameters (not to copy a fixed chain):
+6. When other session tracks are provided, treat them as already mixed: match their role (e.g. second background vocal ≈ same space/level as the first BG), sit new layers relative to them (quieter/louder fader, similar reverb/delay if stacked harmonies), and do not fight the beat track.
+7. Use voice features to tune parameters (not to copy a fixed chain):
    - High centroidHz → no presence boost, little or no airDb, deesser around 10–14 kHz
    - Low loudnessDb → gentler compressor threshold, makeupDb only 1–3
    - High noiseFloorDb → denoise (early), gate if gaps between phrases, cautious HF boosts, skip saturation
@@ -55,7 +62,11 @@ wide doubles: EQ → compressor → deesser → doubler → chorus? → delay + 
 podcast/broadcast: denoise → EQ → compressor → rider → deesser (no reverb unless asked)`;
 
 export function buildMixingGuideForModel(): string {
-  return [CHAIN_ORDER_RULES, EFFECT_SELECTION_GUIDE, PROMPT_INTERPRETATION, STYLE_PRESETS].join(
-    '\n\n',
-  );
+  return [
+    CHAIN_ORDER_RULES,
+    EFFECT_SELECTION_GUIDE,
+    EFFECT_MIX_RULES,
+    PROMPT_INTERPRETATION,
+    STYLE_PRESETS,
+  ].join('\n\n');
 }

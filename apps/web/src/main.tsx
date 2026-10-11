@@ -15,6 +15,7 @@ import {moveChainNode} from './session/chainOrder';
 import {appendAiTurn,clearAiThread,historyForApi,type AiThreadState} from './session/aiThread';
 import {defaultStudioTracks,loadStudioSession,persistStudioSession} from './session/studioPersistence';
 import {summarizePresetChanges} from './session/presetDiff';
+import {otherTracksForGenerateApi} from './session/otherTracksForApi';
 import {exportTimelineWav} from './audio/exportTimeline';
 import {computeTimelineDurationSec} from './session/timeline';
 import {SessionEngine} from './engine/SessionEngine';
@@ -43,6 +44,7 @@ import {useVoiceFeatures} from './hooks/useVoiceFeatures';
 import type {AiTurn} from './session/aiThread';
 import {autotuneParamsFromFeatures,stampPresetFromFeatures} from './analysis/stampFeatures';
 import {defaultParams,EFFECT_CATALOG} from '../../../shared/params';
+import {normalizeAutotuneMixParams} from '../../../shared/effectMixPolicy';
 import {validatePreset} from '../../../shared/validate';
 import type {EffectType,Preset} from '../../../shared/types';
 import './style.css';
@@ -90,16 +92,18 @@ function App(){
  const selected=clips.find(c=>c.id===selectedId)??null;
  React.useEffect(()=>{recordingRef.current=recording;},[recording]);
  React.useEffect(()=>{persistSavedPresetsToSession(savedPresets);},[savedPresets]);
- React.useEffect(()=>{void loadStudioSession().then(saved=>{if(saved){setTracks(saved.tracks);setClips(saved.clips);setMixes(saved.mixes);setTrackSources(saved.trackSources);}setSessionReady(true);}).catch(()=>setSessionReady(true));},[]);
- React.useEffect(()=>{if(!sessionReady)return;const timer=setTimeout(()=>{void persistStudioSession({tracks,clips,mixes,trackSources}).catch(()=>{});},400);return()=>clearTimeout(timer);},[sessionReady,tracks,clips,mixes,trackSources]);
+ React.useEffect(()=>{void loadStudioSession().then(saved=>{if(saved){setTracks(saved.tracks);setClips(saved.clips);setMixes(saved.mixes);setTrackSources(saved.trackSources);setAiThreads(saved.aiThreads);}setSessionReady(true);}).catch(()=>setSessionReady(true));},[]);
+ React.useEffect(()=>{if(!sessionReady)return;const timer=setTimeout(()=>{void persistStudioSession({tracks,clips,mixes,trackSources,aiThreads}).catch(()=>{});},400);return()=>clearTimeout(timer);},[sessionReady,tracks,clips,mixes,trackSources,aiThreads]);
  React.useEffect(()=>{const engine=new SessionEngine(()=>{if(loopRef.current&&!recordingRef.current){void transportRef.current?.startEngineAt(0);return;}transportRef.current?.onPlaybackEnded();});engineRef.current=engine;recorderRef.current=new Recorder();const bootAudio=()=>{void Tone.start().then(()=>Promise.all([preloadNoiseGateWorklet(),preloadDenoiseWorklet(),preloadRiderWorklet(),preloadAutotuneMonitorWorklet(),preloadFormantAutotuneWorklet()])).catch((e:unknown)=>setError(e instanceof Error?e.message:String(e)));};window.addEventListener('pointerdown',bootAudio,{once:true});return()=>{window.removeEventListener('pointerdown',bootAudio);engine.dispose();engineRef.current=null;};},[]);
  const trackPresets=React.useMemo(()=>Object.fromEntries(tracks.map(t=>[t.id,t.preset])),[tracks]);
  React.useEffect(()=>{
   engineRef.current?.sync(clips,trackPresets);
+ },[clips,trackPresets,tracks,recording]);
+ React.useEffect(()=>{
   const recordTrackId=recording?recordTarget.current?.trackId??null:null;
   const effectiveMixes=recordTrackId?{...mixes,[recordTrackId]:{...(mixes[recordTrackId]??{db:0,muted:false,solo:false}),muted:true,solo:false}}:mixes;
   engineRef.current?.setMixes(effectiveMixes,tracks.map(t=>t.id));
- },[clips,trackPresets,mixes,tracks,recording]);
+ },[mixes,tracks,recording]);
  React.useEffect(()=>{engineRef.current?.setMasterGain(masterDb);},[masterDb]);
  React.useEffect(()=>{engineRef.current?.setBypass(dry);},[dry]);
  React.useEffect(()=>{
@@ -126,6 +130,11 @@ function App(){
  const beatClip=React.useMemo(()=>clips.find(c=>c.trackId==='beat'),[clips]);
  const features=useVoiceFeatures(selected,beatClip);
  const aiThread=selectedTrack?(aiThreads[selectedTrack.id]??EMPTY_AI_THREAD):EMPTY_AI_THREAD;
+ const otherTrackNames=React.useMemo(()=>selectedTrack?otherTracksForGenerateApi(tracks,selectedTrack.id,clips,mixes,trackSources,aiThreads).map(t=>t.name):[],[tracks,selectedTrack,clips,mixes,trackSources,aiThreads]);
+ React.useEffect(()=>{
+  const trackId=panel==='effects'&&selectedTrack?selectedTrack.id:null;
+  engineRef.current?.setSpectrumAnalysisTrack(trackId);
+ },[panel,selectedTrack?.id]);
  const monitorAutotune=React.useMemo(()=>{const preset=selectedTrack?.preset;if(!preset)return null;const node=preset.chain.find(n=>n.type==='autotune'&&n.enabled);if(!node||(node.params.mix??0)<=0)return null;return node.params;},[selectedTrack?.preset]);
  function hasBackingClipsAt(trackId:string,at:number){return clips.some(c=>c.trackId!==trackId&&clipTimelineEndSec(c)>at);}
  async function startRecord(trackId=armedId){
@@ -166,9 +175,11 @@ function App(){
   const trackId=selectedTrack.id;const prior=selectedTrack.preset;const userPrompt=prompt.trim();
   generationLock.current=true;setGenerating(true);setError('');setGenerateSummary(null);
   try{
-   const history=followUp?historyForApi(aiThreads,trackId):[];
+   const hasThread=(aiThreads[trackId]?.length??0)>0;
+   const history=hasThread||followUp?historyForApi(aiThreads,trackId):[];
    const priorFader=mixes[trackId]?.db??0;
-   const response=await fetch('/api/presets/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:userPrompt,features,history:history.length?history:undefined,currentPreset:prior.chain.length?prior:undefined,currentTrackVolumeDb:priorFader})});
+   const otherTracks=otherTracksForGenerateApi(tracks,trackId,clips,mixes,trackSources,aiThreads);
+   const response=await fetch('/api/presets/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:userPrompt,features,history:history.length?history:undefined,currentPreset:prior.chain.length?prior:undefined,currentTrackVolumeDb:priorFader,otherTracks:otherTracks.length?otherTracks:undefined})});
    const data=await response.json().catch(()=>null);
    if(!response.ok||!data?.preset)throw new Error(data?.error??'Preset generation failed. Check that the API server is running.');
    const preset=stampPresetFromFeatures(validatePreset(data.preset),features);
@@ -237,11 +248,11 @@ function App(){
    <h2 className="section-title">Track effects</h2>
    <p className="input-help track-fx-hint">Applies to every clip on <strong>{selectedTrack?.name ?? 'this track'}</strong>. Clip tab still controls volume, pan, and trim per take.</p>
    <div className="effect-picker">{EFFECT_CATALOG.map(type=><button key={type} type="button" disabled={recording||!selectedTrack} onClick={()=>addEffect(type)}>+ {type}</button>)}</div>
-   {selectedTrack&&selectedTrack.preset.chain.length>0&&<EffectsPanel trackLabel={selectedTrack.name} trackId={selectedTrack.id} getSpectrumDb={()=>engineRef.current?.getTrackSpectrumDb(selectedTrack.id)??null} audioSampleRate={engineRef.current?.getAudioSampleRate()??48000} preset={selectedTrack.preset} source={trackSources[selectedTrack.id]??'manual'} editedSinceGenerate={!!trackEdited} generateSummary={generateSummary} clearAllDisabled={recording||recordPending} onClearAll={clearTrackEffects} onMove={moveEffect} onParamChange={(id,key,value)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>n.id===id?{...n,params:{...n.params,[key]:value}}:n)})} onEnabledChange={(id,enabled)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.filter(n=>n.id!==id)})} onReset={trackGenerated[selectedTrack.id]?()=>setTracks(current=>current.map(t=>t.id===selectedTrack.id?{...t,preset:structuredClone(trackGenerated[selectedTrack.id])}:t)):undefined}/>}
+   {selectedTrack&&selectedTrack.preset.chain.length>0&&<EffectsPanel trackLabel={selectedTrack.name} trackId={selectedTrack.id} getSpectrumDb={()=>engineRef.current?.getTrackSpectrumDb(selectedTrack.id)??null} audioSampleRate={engineRef.current?.getAudioSampleRate()??48000} preset={selectedTrack.preset} source={trackSources[selectedTrack.id]??'manual'} editedSinceGenerate={!!trackEdited} generateSummary={generateSummary} clearAllDisabled={recording||recordPending} onClearAll={clearTrackEffects} onMove={moveEffect} onParamChange={(id,key,value)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>{if(n.id!==id)return n;if(n.type==='autotune')return{...n,params:normalizeAutotuneMixParams({...n.params,[key]:value})};return{...n,params:{...n.params,[key]:value}};})})} onEnabledChange={(id,enabled)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.filter(n=>n.id!==id)})} onReset={trackGenerated[selectedTrack.id]?()=>setTracks(current=>current.map(t=>t.id===selectedTrack.id?{...t,preset:structuredClone(trackGenerated[selectedTrack.id])}:t)):undefined}/>}
    <SavedPresetsPanel disabled={recording||recordPending} currentPresetName={selectedTrack?.preset.name??''} savedPresets={savedPresets} onSave={savePresetToSession} onApply={applySavedPreset} onRemove={removeSavedPreset}/>
    </div>
    </>:<p className="input-help">Click a clip in the timeline to edit clip levels or the track effect chain.</p>}
-  </section><section className="daw-prompt" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" hidden={panel!=='ai'}><PromptBox prompt={prompt} busy={generating||recording} hasTake={!!selected} features={features} thread={aiThread} trackLabel={selectedTrack?.name} onPromptChange={setPrompt} onGenerate={generate} onFollowUp={followUp} onNewConversation={newAiConversation}/></section></div></aside>
+  </section><section className="daw-prompt" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" hidden={panel!=='ai'}><PromptBox prompt={prompt} busy={generating||recording} hasTake={!!selected} features={features} thread={aiThread} trackLabel={selectedTrack?.name} otherTrackNames={otherTrackNames} onPromptChange={setPrompt} onGenerate={generate} onFollowUp={followUp} onNewConversation={newAiConversation}/></section></div></aside>
   <div className="studio-mixer"><TrackMixer tracks={tracks} mixes={mixes} onChange={(id,mix)=>setMixes(current=>({...current,[id]:mix}))}/></div>
   </div>
   <footer className="studio-status"><span>{recording?'● Recording':playing?'▶ Playing':selected?`Selected: ${selected.name}`:'Ready'}</span><span>{tracks.length} tracks · {clips.length} clips</span></footer>

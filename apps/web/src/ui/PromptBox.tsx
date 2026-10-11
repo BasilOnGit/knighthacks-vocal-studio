@@ -37,6 +37,7 @@ export function PromptBox({
   features,
   thread,
   trackLabel,
+  otherTrackNames,
   onPromptChange,
   onGenerate,
   onFollowUp,
@@ -48,6 +49,7 @@ export function PromptBox({
   features: VoiceFeatures | null;
   thread: AiTurn[];
   trackLabel?: string;
+  otherTrackNames?: string[];
   onPromptChange: (value: string) => void;
   onGenerate: (event: FormEvent) => void;
   onFollowUp: (event: FormEvent) => void;
@@ -71,6 +73,9 @@ export function PromptBox({
       <p className="ai-honesty">
         The AI reads your text and measured voice stats — not the raw audio.
         {trackLabel ? ` Chat is per track (${trackLabel}).` : ''}
+        {otherTrackNames && otherTrackNames.length > 0
+          ? ` Generate also reads ${otherTrackNames.join(', ')} for consistency.`
+          : ''}
       </p>
       <div className="style-chips" aria-label="Style suggestions">
         {Object.entries(STYLES).map(([name, text]) => (

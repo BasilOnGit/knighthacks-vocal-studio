@@ -3,6 +3,8 @@ import type { Preset } from '../../../../shared/types';
 import type { Mix } from '../ui/TrackMixer';
 import type { SessionTrack, Snippet } from './snippets';
 import { emptyTrackPreset, newSessionTrack } from './snippets';
+import type { AiThreadState } from './aiThread';
+import { parseAiThreadState } from './aiThread';
 
 const SESSION_KEY = 'vocal-studio.session.v1';
 const BUFFER_DB = 'vocal-studio-audio';
@@ -30,6 +32,7 @@ export type PersistedSession = {
   clips: PersistedClip[];
   mixes: Record<string, Mix>;
   trackSources: Record<string, string>;
+  aiThreads?: AiThreadState;
 };
 
 function openBufferDb(): Promise<IDBDatabase> {
@@ -119,6 +122,7 @@ export async function persistStudioSession(data: {
   clips: Snippet[];
   mixes: Record<string, Mix>;
   trackSources: Record<string, string>;
+  aiThreads: AiThreadState;
 }): Promise<void> {
   const payload: PersistedSession = {
     tracks: data.tracks.map((t) => ({
@@ -128,6 +132,7 @@ export async function persistStudioSession(data: {
     clips: data.clips.map(clipToPersisted),
     mixes: data.mixes,
     trackSources: data.trackSources,
+    aiThreads: data.aiThreads,
   };
   localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
   await Promise.all(data.clips.map((c) => putBuffer(c.id, c.buffer)));
@@ -138,6 +143,7 @@ export async function loadStudioSession(): Promise<{
   clips: Snippet[];
   mixes: Record<string, Mix>;
   trackSources: Record<string, string>;
+  aiThreads: AiThreadState;
 } | null> {
   const raw = localStorage.getItem(SESSION_KEY);
   if (!raw) return null;
@@ -180,6 +186,7 @@ export async function loadStudioSession(): Promise<{
     clips,
     mixes: parsed.mixes ?? {},
     trackSources: parsed.trackSources ?? {},
+    aiThreads: parseAiThreadState(parsed.aiThreads),
   };
 }
 

@@ -2,6 +2,7 @@ import { buildMixingGuideForModel } from '../../../shared/mixingGuide.ts';
 import { FEW_SHOT_SEEDS, matchSeed } from '../../../shared/matchSeed.ts';
 import { MAX_EFFECTS, PARAM_RANGES, fillParams } from '../../../shared/params.ts';
 import { stampPresetFromFeatures } from '../../../shared/stampPreset.ts';
+import { MAX_OTHER_TRACKS_FOR_MODEL } from '../../../shared/otherTracks.ts';
 import { clampTrackVolumeDb, withResolvedTrackVolume } from '../../../shared/trackVolume.ts';
 import { validatePreset } from '../../../shared/validate.ts';
 
@@ -58,12 +59,14 @@ Workflow (internal, before you write JSON):
 3. Sequence them deliberately for that sound (not a fixed master bus order).
 4. Set parameters using features and the catalog ranges.
 5. Set trackVolumeDb when the vibe needs a different fader level (track mixer, not clip gain). Omit on follow-ups only if the user did not ask to change level.
+6. When other session tracks are listed in the user message, use them as context: stack background vocals consistently, differentiate only when the prompt asks (e.g. "darker BG", "wider double").
 
 Parameter habits (clean first — this DSP gets harsh if you copy bright DAW numbers blindly):
 trackVolumeDb — −36 to +6 dB; whisper/intimate/background −3 to −6, standard pop/rap 0 to +2, loud anthem/upfront +2 to +4; lower if loudnessDb > −16, raise if loudnessDb < −26
-compressor — mix 100 for Digi Comp style; kneeDb 10–14; ratio 2.5–4 intimate, 4–6 punchy; makeupDb 0–2; attack 8–15 ms, release 50–120 ms
+compressor — mix 100 always (serial); kneeDb 10–14; ratio 2.5–4 intimate, 4–6 punchy; makeupDb 0–2; attack 8–15 ms, release 50–120 ms
+autotune — mix 100 or omit (mix 0); never partial mix — soften with retuneSpeed/snap, not mix
 saturation — omit for clean/BandLab-style vocals; drive 0.06–0.15, mix 0.08–0.18 only for warmth/grit
-deesser — freqHz 8000–14000 (air/sizzle), not 5–6 kHz (that chews presence). mix 0.5–0.75, thresholdDb around -24 to -18
+deesser — freqHz 8000–14000 (air/sizzle), not 5–6 kHz (that chews presence). mix 60–85 strength (not dry/wet), thresholdDb around -24 to -18
 delay — timeMs, feedback and mix as 0–100 % (BandLab D-Delay): feedback 10–20 on leads, mix 10–25; pingPong 1 for stereo bounce on spacious/dreamy, 0 for mono slap
 denoise — place first when used; amount 35–55 clean-up, 55–80 noisy room; omit on pristine studio takes
 rider — after compressor for smooth level; targetDb -20 to -16; speed 0.25–0.5; maxGainDb 4–8; omit for aggressive punch chains
@@ -158,6 +161,84 @@ function finishPreset(preset, prompt, features, currentTrackVolumeDb) {
   return withResolvedTrackVolume(stamped, prompt, features, currentTrackVolumeDb);
 }
 
+const OTHER_TRACK_CHAIN_TYPES = new Set(Object.keys(PARAM_RANGES));
+
+export function validateOtherTracks(body) {
+  if (body?.otherTracks == null) {
+    return [];
+  }
+  if (!Array.isArray(body.otherTracks)) {
+    throw new Error('otherTracks must be an array.');
+  }
+  const out = [];
+  for (const entry of body.otherTracks.slice(0, MAX_OTHER_TRACKS_FOR_MODEL)) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 80) : '';
+    if (!name) {
+      continue;
+    }
+    const role = entry.role === 'beat' ? 'beat' : 'vocal';
+    const clipCount =
+      typeof entry.clipCount === 'number' && Number.isFinite(entry.clipCount)
+        ? Math.max(0, Math.floor(entry.clipCount))
+        : 0;
+    const trackVolumeDb =
+      typeof entry.trackVolumeDb === 'number' && Number.isFinite(entry.trackVolumeDb)
+        ? clampTrackVolumeDb(entry.trackVolumeDb)
+        : 0;
+    const presetName =
+      typeof entry.presetName === 'string' ? entry.presetName.trim().slice(0, 120) : 'Untitled';
+    const explanation =
+      typeof entry.explanation === 'string' ? entry.explanation.trim().slice(0, 500) : '';
+    const chain = [];
+    if (Array.isArray(entry.chain)) {
+      for (const node of entry.chain.slice(0, 12)) {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') {
+          continue;
+        }
+        if (!OTHER_TRACK_CHAIN_TYPES.has(node.type)) {
+          continue;
+        }
+        const rawParams = node.params && typeof node.params === 'object' ? node.params : {};
+        const validatedNode = validatePreset({
+          name: 'context',
+          explanation: '',
+          chain: [{ type: node.type, params: rawParams }],
+        }).chain[0];
+        if (!validatedNode) {
+          continue;
+        }
+        const why =
+          typeof node.why === 'string' && node.why.trim() ? node.why.trim().slice(0, 200) : undefined;
+        chain.push({
+          type: validatedNode.type,
+          params: validatedNode.params,
+          ...(why ? { why } : {}),
+        });
+      }
+    }
+    const snapshot = {
+      name,
+      role,
+      clipCount,
+      trackVolumeDb,
+      presetName,
+      explanation,
+      chain,
+    };
+    if (typeof entry.presetSource === 'string' && entry.presetSource.trim()) {
+      snapshot.presetSource = entry.presetSource.trim().slice(0, 32);
+    }
+    if (typeof entry.lastPrompt === 'string' && entry.lastPrompt.trim()) {
+      snapshot.lastPrompt = entry.lastPrompt.trim().slice(0, 500);
+    }
+    out.push(snapshot);
+  }
+  return out;
+}
+
 export function validateCurrentTrackVolume(body) {
   if (body?.currentTrackVolumeDb == null) {
     return undefined;
@@ -169,7 +250,15 @@ export function validateCurrentTrackVolume(body) {
   return clampTrackVolumeDb(value);
 }
 
-function userMessage(prompt, features, errorNote, currentPreset, history, currentTrackVolumeDb) {
+function userMessage(
+  prompt,
+  features,
+  errorNote,
+  currentPreset,
+  history,
+  currentTrackVolumeDb,
+  otherTracks,
+) {
   const lines = [
     `Prompt: ${prompt}`,
     `Features: ${JSON.stringify(features)}`,
@@ -180,6 +269,12 @@ function userMessage(prompt, features, errorNote, currentPreset, history, curren
     lines.push(
       `Current track fader: ${currentTrackVolumeDb} dB (allowed −36 to +6). Set trackVolumeDb when the vibe needs a different level.`,
     );
+  }
+  if (otherTracks.length > 0) {
+    lines.push(
+      'Other tracks already in this session (match their stack/level when adding a similar layer; beat is reference only — do not process the beat):',
+    );
+    lines.push(JSON.stringify(otherTracks));
   }
   if (history.length > 0) {
     lines.push(
@@ -218,6 +313,7 @@ async function requestPreset(
   currentPreset,
   history,
   currentTrackVolumeDb,
+  otherTracks,
 ) {
   const response = await fetchImpl(HF_CHAT_URL, {
     method: 'POST',
@@ -231,7 +327,15 @@ async function requestPreset(
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: userMessage(prompt, features, errorNote, currentPreset, history, currentTrackVolumeDb),
+          content: userMessage(
+            prompt,
+            features,
+            errorNote,
+            currentPreset,
+            history,
+            currentTrackVolumeDb,
+            otherTracks,
+          ),
         },
       ],
       response_format: { type: 'json_object' },
@@ -266,6 +370,7 @@ export async function generatePreset(prompt, features, options = {}) {
     ? validatePreset(options.currentPreset)
     : undefined;
   const currentTrackVolumeDb = options.currentTrackVolumeDb;
+  const otherTracks = options.otherTracks ?? [];
   if (!token || !model) {
     const seed = validatePreset(matchSeed(prompt));
     return {
@@ -287,6 +392,7 @@ export async function generatePreset(prompt, features, options = {}) {
         currentPreset,
         history,
         currentTrackVolumeDb,
+        otherTracks,
       );
       return { preset, source: 'model' };
     } catch (error) {

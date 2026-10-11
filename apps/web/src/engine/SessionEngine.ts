@@ -34,7 +34,9 @@ type TrackSlot = {
 const AUTOTUNE_TICK_SEC = 0.02;
 /** Upper bound for latency compensation (the autotune worklet adds ~0.09 s). */
 const MAX_COMPENSATION_SEC = 0.5;
+const COMP_RAMP_SEC = 0.025;
 const SEEK_FADE_IN_SEC = 0.008;
+const SPECTRUM_FFT_SIZE = 1024;
 
 export class SessionEngine {
   /** @deprecated Use clipSlots — kept for tests. */
@@ -52,6 +54,9 @@ export class SessionEngine {
   private clips: Snippet[] = [];
   private workletsReady = false;
   private transportActive = false;
+  private clipSyncSignature = '';
+  private trackSyncSignature = '';
+  private spectrumTapTrackId: string | null = null;
 
   constructor(private onEnded: () => void) {
     this.master = new Tone.Gain(1);
@@ -122,6 +127,15 @@ export class SessionEngine {
       });
     }
 
+    const clipSignature = this.clipsSyncSignature(clips);
+    const clipsChanged = clipSignature !== this.clipSyncSignature;
+    this.clipSyncSignature = clipSignature;
+
+    const trackSignature = [...trackIds].sort().join(',');
+    const tracksChanged = trackSignature !== this.trackSyncSignature;
+    this.trackSyncSignature = trackSignature;
+
+    let chainsStructureChanged = false;
     for (const track of this.trackSlots.values()) {
       const preset = trackPresets[track.trackId] ?? track.preset;
       const key = preset.chain.map((n) => `${n.id}:${n.type}`).join('|');
@@ -130,6 +144,7 @@ export class SessionEngine {
         track.chainKey = key;
         track.autotuneSourceKey = '';
         track.autotuneClipId = '';
+        chainsStructureChanged = true;
       } else if (track.preset !== preset) {
         for (const node of preset.chain) {
           const previous = track.preset.chain.find((n) => n.id === node.id);
@@ -146,8 +161,43 @@ export class SessionEngine {
       track.preset = preset;
     }
 
-    this.updateCompensation();
-    this.refreshAutotuneSources();
+    if (clipsChanged || chainsStructureChanged) {
+      this.refreshAutotuneSources();
+    }
+    if (clipsChanged || tracksChanged || chainsStructureChanged) {
+      this.updateCompensation();
+    }
+  }
+
+  private clipsSyncSignature(clips: Snippet[]): string {
+    return clips
+      .map(
+        (c) =>
+          `${c.id}:${c.trackId}:${c.trim.start}:${c.trim.end}:${c.clipStartSec}:${c.volumeDb}:${c.muted}:${c.pan}`,
+      )
+      .join('|');
+  }
+
+  /** Wire the EQ spectrum tap only for the active inspector track (saves CPU on multi-track sessions). */
+  setSpectrumAnalysisTrack(trackId: string | null): void {
+    if (this.spectrumTapTrackId === trackId) {
+      return;
+    }
+    for (const track of this.trackSlots.values()) {
+      try {
+        track.bus.disconnect(track.spectrumAnalyser);
+      } catch {
+        // Not connected.
+      }
+    }
+    this.spectrumTapTrackId = trackId;
+    if (!trackId) {
+      return;
+    }
+    const track = this.trackSlots.get(trackId);
+    if (track) {
+      track.bus.connect(track.spectrumAnalyser);
+    }
   }
 
   private ensureTrackSlot(trackId: string, preset: Preset): TrackSlot {
@@ -161,11 +211,9 @@ export class SessionEngine {
     const dryComp = new Tone.Delay(0, MAX_COMPENSATION_SEC);
     const wetComp = new Tone.Delay(0, MAX_COMPENSATION_SEC);
     const trackGain = new Tone.Gain(1);
-    const spectrumAnalyser = new Tone.Analyser('fft', 2048);
+    const spectrumAnalyser = new Tone.Analyser('fft', SPECTRUM_FFT_SIZE);
     const spectrumSink = new Tone.Gain(0);
-    bus.connect(spectrumAnalyser);
     spectrumAnalyser.connect(spectrumSink);
-    spectrumSink.connect(this.master);
 
     bus.connect(dry);
     bus.connect(chain.input);
@@ -243,12 +291,24 @@ export class SessionEngine {
     return active ?? onTrack[0];
   }
 
+  private rampDelaySec(delay: Tone.Delay, seconds: number): void {
+    const param = delay.delayTime;
+    const current = Number(param.value);
+    if (Math.abs(current - seconds) < 1e-6) {
+      return;
+    }
+    const now = Tone.now();
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(current, now);
+    param.rampTo(seconds, COMP_RAMP_SEC);
+  }
+
   private updateCompensation(): void {
     if (this.dry) {
       this.compensationSec = 0;
       for (const track of this.trackSlots.values()) {
-        track.dryComp.delayTime.value = 0;
-        track.wetComp.delayTime.value = 0;
+        this.rampDelaySec(track.dryComp, 0);
+        this.rampDelaySec(track.wetComp, 0);
       }
       return;
     }
@@ -260,8 +320,8 @@ export class SessionEngine {
     this.compensationSec = longest;
     for (const track of this.trackSlots.values()) {
       const own = Math.min(longest, track.chain.latencySec);
-      track.dryComp.delayTime.value = longest;
-      track.wetComp.delayTime.value = longest - own;
+      this.rampDelaySec(track.dryComp, longest);
+      this.rampDelaySec(track.wetComp, longest - own);
     }
   }
 
@@ -467,6 +527,9 @@ export class SessionEngine {
   }
 
   private disposeTrackSlot(track: TrackSlot): void {
+    if (this.spectrumTapTrackId === track.trackId) {
+      this.spectrumTapTrackId = null;
+    }
     track.chain.onLatencyChange(null);
     track.chain.dispose();
     track.bus.dispose();
