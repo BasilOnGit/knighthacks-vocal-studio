@@ -15,7 +15,7 @@ Copy `apps/api/.env.example` to `apps/api/.env` when configuring integrations. N
 ## What is included
 - Record a vocal, trim it on a waveform, and play the trimmed clip.
 - Measure the take (loudness, brightness, pitch) and show warnings.
-- Apply an editable effect chain (gate, autotune, EQ, compressor, de-esser, saturation, chorus, delay, reverb) with a dry/processed toggle.
+- Apply an editable effect chain (gate, autotune, EQ, compressor, de-esser, saturation, chorus, delay, reverb) with a dry/processed toggle. Autotune uses the [Rubber Band Library](https://breakfastquay.com/rubberband/) (GPLv2) for formant-preserving pitch correction in the browser.
 - Node API that validates the prompt and voice measurements, calls Hugging Face when `HF_TOKEN` and `HF_MODEL` are set, and returns a labeled fallback preset if that call fails.
 - Hugging Face and Neon environment placeholders, plus the team build plan.
 

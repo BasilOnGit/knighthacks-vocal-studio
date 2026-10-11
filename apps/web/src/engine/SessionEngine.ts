@@ -1,17 +1,26 @@
 import * as Tone from 'tone';
+import { preloadFormantAutotuneWorklet } from '../audio/formantAutotune';
+import { preloadNoiseGateWorklet } from '../audio/noiseGate';
 import { VocalChain } from '../chain/VocalChain';
 import type { Snippet } from '../session/snippets';
 import { clipTimelineStartSec, clipTimelineEndSec } from '../session/clip';
 import type { Mix } from '../ui/TrackMixer';
 
-type Slot = {clip: Snippet; player: Tone.Player; chain: VocalChain; dry: Tone.Gain; wet: Tone.Gain; gain: Tone.Gain; pan: Tone.Panner; trackGain: Tone.Gain; chainKey: string};
+type Slot = {clip: Snippet; player: Tone.Player; chain: VocalChain; dry: Tone.Gain; wet: Tone.Gain; dryComp: Tone.Delay; wetComp: Tone.Delay; gain: Tone.Gain; pan: Tone.Panner; trackGain: Tone.Gain; chainKey: string; autotuneSourceKey: string};
+const AUTOTUNE_TICK_SEC = 0.02;
+/** Upper bound for latency compensation (the autotune worklet adds ~0.09 s). */
+const MAX_COMPENSATION_SEC = 0.5;
 export class SessionEngine {
  private slots=new Map<string,Slot>();
  private master: Tone.Gain;
  private limiter: Tone.Limiter;
  private endEvent: number | null=null;
+ private autotuneEvent: number | null=null;
  private dry=false;
  private revision=0;
+ /** Every track is delayed by this much so tracks whose chain has latency (autotune) stay in sync with the rest. */
+ private compensationSec=0;
+ private playFrom=0;
  constructor(private onEnded:()=>void) {
   this.master=new Tone.Gain(1);this.limiter=new Tone.Limiter(-1).toDestination();this.master.connect(this.limiter);
  }
@@ -22,17 +31,37 @@ export class SessionEngine {
    let slot=this.slots.get(clip.id);
    if(!slot){
     const player=new Tone.Player();const chain=new VocalChain();const dry=new Tone.Gain(this.dry?1:0);const wet=new Tone.Gain(this.dry?0:1);const gain=new Tone.Gain(1);const pan=new Tone.Panner(clip.pan);const trackGain=new Tone.Gain(1);
-    player.connect(dry);player.connect(chain.input);chain.output.connect(wet);dry.connect(gain);wet.connect(gain);gain.connect(pan);pan.connect(trackGain);trackGain.connect(this.master);
-    player.buffer.set(clip.buffer);slot={clip,player,chain,dry,wet,gain,pan,trackGain,chainKey:''};this.slots.set(clip.id,slot);
+    const dryComp=new Tone.Delay(0,MAX_COMPENSATION_SEC);const wetComp=new Tone.Delay(0,MAX_COMPENSATION_SEC);
+    player.connect(dry);player.connect(chain.input);chain.output.connect(wet);dry.connect(dryComp);dryComp.connect(gain);wet.connect(wetComp);wetComp.connect(gain);gain.connect(pan);pan.connect(trackGain);trackGain.connect(this.master);
+    player.buffer.set(clip.buffer);slot={clip,player,chain,dry,wet,dryComp,wetComp,gain,pan,trackGain,chainKey:'',autotuneSourceKey:''};this.slots.set(clip.id,slot);
+    chain.onLatencyChange(()=>this.updateCompensation());
    }
    const key=clip.preset.chain.map(n=>`${n.id}:${n.type}`).join('|');
-   if(slot.chainKey!==key){slot.chain.setChain(clip.preset);slot.chainKey=key;}
+   if(slot.chainKey!==key){slot.chain.setChain(clip.preset);slot.chainKey=key;slot.autotuneSourceKey='';}
    else if(slot.clip.preset!==clip.preset) for(const node of clip.preset.chain){
     const previous=slot.clip.preset.chain.find(n=>n.id===node.id);
     if(previous?.enabled!==node.enabled)slot.chain.setEnabled(node.id,node.enabled);
     for(const [key,value] of Object.entries(node.params))if(previous?.params[key]!==value)slot.chain.updateParam(node.id,key,value);
    }
+   const autotuneKey=`${clip.trim.start}:${clip.trim.end}:${clip.buffer.length}:${clip.buffer.sampleRate}`;
+   if(slot.autotuneSourceKey!==autotuneKey){
+    slot.chain.setAutotuneSource(clip.buffer,clip.trim);
+    slot.autotuneSourceKey=autotuneKey;
+   }
    slot.pan.pan.rampTo(clip.pan,.03);slot.gain.gain.rampTo(clip.muted?0:Tone.dbToGain(clip.volumeDb),.03);slot.clip=clip;
+  }
+  this.updateCompensation();
+ }
+ /** Delay every track to match the slowest chain, so autotuned vocals stay aligned with the beat. */
+ private updateCompensation(){
+  let longest=0;
+  for(const slot of this.slots.values())longest=Math.max(longest,slot.chain.latencySec);
+  longest=Math.min(MAX_COMPENSATION_SEC,longest);
+  this.compensationSec=longest;
+  for(const slot of this.slots.values()){
+   const own=Math.min(longest,slot.chain.latencySec);
+   slot.dryComp.delayTime.value=longest;
+   slot.wetComp.delayTime.value=longest-own;
   }
  }
  setMixes(mixes: Record<string,Mix>, trackIds: string[]): void {
@@ -44,10 +73,29 @@ export class SessionEngine {
  }
  setMasterGain(db:number){this.master.gain.rampTo(Tone.dbToGain(db),.03);}
  setBypass(dry:boolean){this.dry=dry;for(const slot of this.slots.values()){slot.dry.gain.rampTo(dry?1:0,.03);slot.wet.gain.rampTo(dry?0:1,.03);}}
- getSeconds(){return Tone.getTransport().seconds;}
- stop(){this.revision++;const transport=Tone.getTransport();if(this.endEvent!==null){transport.clear(this.endEvent);this.endEvent=null;}for(const slot of this.slots.values())slot.player.unsync();transport.stop();transport.seconds=0;}
+ /** Position of the audio being heard: the transport runs ahead by the compensation delay. */
+ getSeconds(){return Math.max(this.playFrom,Tone.getTransport().seconds-this.compensationSec);}
+ stop(){
+  this.revision++;
+  const transport=Tone.getTransport();
+  if(this.endEvent!==null){transport.clear(this.endEvent);this.endEvent=null;}
+  if(this.autotuneEvent!==null){transport.clear(this.autotuneEvent);this.autotuneEvent=null;}
+  for(const slot of this.slots.values()){slot.player.unsync();slot.chain.resetAutotuneSmoothing();}
+  transport.stop();transport.seconds=0;this.playFrom=0;
+ }
+ private tickAutotune(){
+  const timelineSec=Tone.getTransport().seconds;
+  for(const slot of this.slots.values()){
+   const clip=slot.clip;
+   const clipStart=clipTimelineStartSec(clip);
+   const clipEnd=clipTimelineEndSec(clip);
+   if(timelineSec<clipStart||timelineSec>=clipEnd)continue;
+   const sourceTime=clip.trim.start+(timelineSec-clipStart);
+   slot.chain.tickAutotune(sourceTime);
+  }
+ }
  async play(from:number): Promise<boolean>{
-  this.stop();const revision=this.revision;await Tone.start();if(revision!==this.revision)return false;
+  this.stop();const revision=this.revision;await Tone.start();await Promise.all([preloadNoiseGateWorklet(),preloadFormantAutotuneWorklet()]);if(revision!==this.revision)return false;
   const transport=Tone.getTransport();const start=Math.max(0,from);
   let end=start;
   for(const slot of this.slots.values()){
@@ -64,9 +112,12 @@ export class SessionEngine {
    end=Math.max(end,clipEnd);
   }
   if(end<=start){this.onEnded();return false;}
-  transport.seconds=start;
-  this.endEvent=transport.scheduleOnce(()=>{this.stop();this.onEnded();},end+.05);transport.start();return true;
+  transport.seconds=start;this.playFrom=start;this.updateCompensation();
+  this.tickAutotune();
+  this.autotuneEvent=transport.scheduleRepeat(()=>{this.tickAutotune();},AUTOTUNE_TICK_SEC);
+  // Audio trails the transport by the compensation delay, so let it finish before ending.
+  this.endEvent=transport.scheduleOnce(()=>{this.stop();this.onEnded();},end+.05+this.compensationSec);transport.start();return true;
  }
- private disposeSlot(slot: Slot){slot.player.unsync();slot.player.dispose();slot.chain.dispose();slot.dry.dispose();slot.wet.dispose();slot.gain.dispose();slot.pan.dispose();slot.trackGain.dispose();}
+ private disposeSlot(slot: Slot){slot.chain.onLatencyChange(null);slot.player.unsync();slot.player.dispose();slot.chain.dispose();slot.dry.dispose();slot.wet.dispose();slot.dryComp.dispose();slot.wetComp.dispose();slot.gain.dispose();slot.pan.dispose();slot.trackGain.dispose();}
  dispose(){this.stop();for(const slot of this.slots.values())this.disposeSlot(slot);this.slots.clear();this.master.dispose();this.limiter.dispose();}
 }

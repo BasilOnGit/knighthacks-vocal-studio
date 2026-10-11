@@ -11,10 +11,12 @@ function setup(){
  class Param{constructor(value){this.value=value;params.push(this);}rampTo(value){this.value=value;}cancelScheduledValues(){}}
  class Node{constructor(value=1){this.gain=new Param(value);this.pan=new Param(value);}connect(){return this;}dispose(){this.disposed=true;}toDestination(){return this;}}
  class Player extends Node{constructor(){super();players.push(this);this.buffer={set:buffer=>{this.audio=buffer;}};}sync(){return this;}unsync(){return this;}start(at,offset,duration){this.scheduled={at,offset,duration};return this;}}
- class Chain extends Node{constructor(){super();chains.push(this);this.input=new Node();this.output=new Node();this.updates=[];}setChain(preset){this.preset=preset;}setEnabled(id,on){this.updates.push({id,on});}updateParam(id,key,value){this.updates.push({id,key,value});}}
- const transport={seconds:0,stop(){},start(){this.started=true;},clear(){},scheduleOnce(callback,at){this.end=at;return 1;}};
- const tone={Gain:Node,Limiter:Node,Panner:Node,Player,dbToGain:db=>10**(db/20),getTransport:()=>transport,now:()=>0,start:async()=>{}};
- const Engine=new Function('Tone','VocalChain','clipTimelineStartSec','clipTimelineEndSec',code+'\nreturn SessionEngine;')(tone,Chain,clipTimelineStartSec,clipTimelineEndSec);
+ class Delay extends Node{constructor(){super();this.delayTime=new Param(0);}}
+ class Chain extends Node{constructor(){super();chains.push(this);this.input=new Node();this.output=new Node();this.updates=[];this.latencySec=0;}setChain(preset){this.preset=preset;}setEnabled(id,on){this.updates.push({id,on});}updateParam(id,key,value){this.updates.push({id,key,value});}onLatencyChange(listener){this.latencyListener=listener;}setAutotuneSource(){}tickAutotune(){}resetAutotuneSmoothing(){}}
+ const transport={seconds:0,stop(){},start(){this.started=true;},clear(){},scheduleOnce(callback,at){this.end=at;return 1;},scheduleRepeat(){return 2;}};
+ const tone={Gain:Node,Limiter:Node,Panner:Node,Delay,Player,dbToGain:db=>10**(db/20),getTransport:()=>transport,now:()=>0,start:async()=>{}};
+ const preload=async()=>{};
+ const Engine=new Function('Tone','VocalChain','clipTimelineStartSec','clipTimelineEndSec','preloadNoiseGateWorklet','preloadFormantAutotuneWorklet',code+'\nreturn SessionEngine;')(tone,Chain,clipTimelineStartSec,clipTimelineEndSec,preload,preload);
  return {engine:new Engine(()=>{}),players,chains,tone,transport};
 }
 const buffer={duration:5};
@@ -36,4 +38,22 @@ test('clip volume, pan, track mute and solo use separate audio nodes',()=>{
 });
 test('stopping during audio-context startup cancels playback',async()=>{
  const {engine,tone,transport}=setup();engine.sync([newSnippet(buffer,'A','vocal',0,'a')]);let resolve;tone.start=()=>new Promise(r=>{resolve=r;});const pending=engine.play(0);engine.stop();resolve();assert.equal(await pending,false);assert.equal(transport.started,undefined);
+});
+test('tracks are delayed to line up with the chain that has the most latency',async()=>{
+ const {engine,chains,transport}=setup();const vocal=newSnippet(buffer,'V','vocal',0,'v');const beat=newSnippet(buffer,'B','beat',0,'b');
+ engine.sync([vocal,beat]);
+ // the vocal's autotune finishes measuring itself ~90 ms of latency
+ chains[0].latencySec=.09;chains[0].latencyListener();
+ const v=engine.slots.get('v'),b=engine.slots.get('b');
+ assert.ok(Math.abs(v.wetComp.delayTime.value-0)<1e-9,'the slow chain needs no extra delay');
+ assert.ok(Math.abs(b.wetComp.delayTime.value-.09)<1e-9,'the beat is held back to match');
+ assert.ok(Math.abs(v.dryComp.delayTime.value-.09)<1e-9&&Math.abs(b.dryComp.delayTime.value-.09)<1e-9,'bypass path matches the wet path, so A/B stays aligned');
+ assert.equal(await engine.play(1),true);
+ assert.ok(Math.abs(transport.end-(5+.05+.09))<1e-9,'playback ends after the delayed audio has finished');
+ transport.seconds=1.5;assert.ok(Math.abs(engine.getSeconds()-1.41)<1e-9,'reported position follows the audio that is heard');
+ transport.seconds=1.02;assert.equal(engine.getSeconds(),1,'position never reports before where playback started');
+});
+test('no latency anywhere means no compensation delay',()=>{
+ const {engine}=setup();engine.sync([newSnippet(buffer,'A','vocal',0,'a'),newSnippet(buffer,'B','beat',0,'b')]);
+ for(const slot of engine.slots.values()){assert.equal(slot.dryComp.delayTime.value,0);assert.equal(slot.wetComp.delayTime.value,0);}
 });

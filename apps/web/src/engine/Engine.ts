@@ -1,4 +1,5 @@
 import * as Tone from 'tone';
+import { preloadNoiseGateWorklet } from '../audio/noiseGate';
 import { VocalChain } from '../chain/VocalChain';
 import type {
   Engine as EngineContract,
@@ -258,6 +259,7 @@ export class PlaybackEngine implements EngineContract {
     }
     if (!this.contextReady) {
       await Tone.start();
+      await preloadNoiseGateWorklet();
       this.contextReady = true;
     }
     this.stopTransport();

@@ -671,6 +671,24 @@ body {
   accent-color: var(--accent);
 }
 
+.param--select {
+  grid-template-columns: minmax(5rem, 10rem) minmax(0, 1fr);
+}
+
+.param--select span {
+  line-height: 1.35;
+}
+
+.param--select select {
+  width: 100%;
+  background: #242b3a;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 .param-value {
   font-variant-numeric: tabular-nums;
   min-width: 4ch;
@@ -680,6 +698,89 @@ body {
 
 .preset button {
   margin-top: 12px;
+}
+
+.saved-presets {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.saved-presets .section-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.saved-presets-save {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.saved-presets-save label {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 140px;
+}
+
+.saved-presets-save input {
+  background: #242b3a;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.saved-presets-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.saved-presets-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.saved-presets-list li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.saved-presets-meta {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.saved-presets-meta span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.saved-presets-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.saved-presets-remove {
+  color: var(--muted);
 }
 
 .fixture-label {

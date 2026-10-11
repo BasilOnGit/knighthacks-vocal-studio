@@ -19,6 +19,10 @@ export function overlapRows(clips: Snippet[]): {clips: {clip: Snippet; row: numb
  });return {clips:result,rowCount:Math.max(1,ends.length)};
 }
 export function deleteSnippet(clips: Snippet[], id: string): Snippet[] { return clips.filter(clip=>clip.id!==id); }
+export function restoreDeletedClip(clips: Snippet[], snippet: Snippet): Snippet[] {
+ if(clips.some(clip=>clip.id===snippet.id))return clips;
+ return [...clips,snippet];
+}
 export function ignoresDeleteShortcut(target: EventTarget | null): boolean {
  const node=target as HTMLElement | null;
  return !!node?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]');

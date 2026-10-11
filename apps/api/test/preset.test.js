@@ -84,7 +84,7 @@ test('generatePreset returns a validated model preset', async () => {
       assert.equal(body.model, 'Qwen/Qwen2.5-7B-Instruct');
       assert.equal(body.response_format.type, 'json_object');
       assert.equal(init.headers.Authorization, 'Bearer test-token');
-      assert.match(body.messages[0].content, /gate: thresholdDb -80 to -10/);
+      assert.match(body.messages[0].content, /gate: thresholdDb -80 to 15/);
       assert.match(body.messages[0].content, /deesser: freqHz 4000 to 10000/);
       assert.match(body.messages[1].content, /dreamy spacious vocals/);
       return jsonResponse(`\`\`\`json\n${JSON.stringify(dreamyPreset)}\n\`\`\``);
@@ -98,7 +98,7 @@ test('generatePreset returns a validated model preset', async () => {
     ['eq', 'reverb', 'delay'],
   );
   assert.equal(result.preset.chain[1].params.mix, 0.4);
-  assert.equal(result.preset.chain[1].params.preDelayMs, 20);
+  assert.equal(result.preset.chain[1].params.preDelayMs, 28);
 });
 
 test('generatePreset retries once after invalid JSON', async () => {
@@ -232,9 +232,10 @@ test('fills missing params and assigns a stable id', () => {
   assert.equal(preset.chain[0].id, 'eq-1');
   assert.equal(preset.chain[0].enabled, true);
   assert.equal(preset.chain[0].params.lowCutHz, 90);
-  assert.equal(preset.chain[0].params.lowShelfDb, 0);
-  assert.equal(preset.chain[0].params.presenceDb, 0);
-  assert.equal(preset.chain[0].params.airDb, 0);
+  assert.equal(preset.chain[0].params.lowShelfHz, 180);
+  assert.equal(preset.chain[0].params.bodyDb, -1.5);
+  assert.equal(preset.chain[0].params.presenceDb, 1.5);
+  assert.equal(preset.chain[0].params.airDb, 2);
 });
 
 test('preserves model chain order', () => {
@@ -296,6 +297,25 @@ test('ensureMixProtocol prepends eq and appends reverb when missing', () => {
   assert.deepEqual(
     preset.chain.map((node) => node.type),
     ['eq', 'compressor', 'reverb'],
+  );
+});
+
+test('ensureMixProtocol inserts eq after gate and autotune when model ordered them first', () => {
+  const preset = ensureMixProtocol(
+    validatePreset({
+      name: 'Trap',
+      explanation: 'Tuned lead',
+      chain: [
+        { type: 'gate', params: { thresholdDb: -40 } },
+        { type: 'autotune', params: { mix: 0.85 } },
+        { type: 'compressor', params: { ratio: 5 } },
+      ],
+    }),
+    'trap vocal',
+  );
+  assert.deepEqual(
+    preset.chain.map((node) => node.type),
+    ['gate', 'autotune', 'eq', 'compressor', 'reverb'],
   );
 });
 

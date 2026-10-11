@@ -1,10 +1,14 @@
 import React from 'react';
+import * as Tone from 'tone';
 import {createRoot} from 'react-dom/client';
+import {preloadNoiseGateWorklet} from './audio/noiseGate';
+import {preloadAutotuneMonitorWorklet} from './audio/autotuneMonitor';
+import {preloadFormantAutotuneWorklet} from './audio/formantAutotune';
 import {TimelineScale} from './session/TimelineScale';
 import {anchorForTimelineStart} from './audio/clipEditing';
 import {decodeAudioFile,AUDIO_FILE_ACCEPT} from './audio/decodeAudioFile';
 import {clipTimelineStartSec,clipTimelineEndSec} from './session/clip';
-import {newSnippet,overlapRows,deleteSnippet,ignoresDeleteShortcut,type Snippet,type SessionTrack} from './session/snippets';
+import {newSnippet,overlapRows,deleteSnippet,restoreDeletedClip,ignoresDeleteShortcut,type Snippet,type SessionTrack} from './session/snippets';
 import {computeTimelineDurationSec} from './session/timeline';
 import {SessionEngine} from './engine/SessionEngine';
 import {Recorder} from './engine/recorder';
@@ -15,6 +19,15 @@ import {TimelineRuler} from './ui/TimelineRuler';
 import {TimelinePlayhead} from './ui/TimelinePlayhead';
 import {TrimWaveViewport} from './ui/TrimWaveViewport';
 import {EffectsPanel} from './ui/EffectsPanel';
+import {SavedPresetsPanel} from './ui/SavedPresetsPanel';
+import {
+  loadSavedPresetsFromSession,
+  MAX_SAVED_PRESETS,
+  persistSavedPresetsToSession,
+  presetForApply,
+  snapshotPreset,
+  type SavedPreset,
+} from './session/savedPresets';
 import {PromptBox} from './ui/PromptBox';
 import {FeatureList} from './ui/FeatureList';
 import {analyze,featureWarnings} from './analysis/analyze';
@@ -23,6 +36,8 @@ import {validatePreset} from '../../../shared/validate';
 import type {EffectType,Preset} from '../../../shared/types';
 import './style.css';
 const MAX_TRACKS=12;
+const MAX_UNDO_DELETES=20;
+type ClipDeleteUndo={snippet:Snippet;source?:string;generated?:Preset};
 function App(){
  const [tracks,setTracks]=React.useState<SessionTrack[]>([{id:'beat',name:'Beat'},{id:'vocal',name:'Vocal'}]);
  const [clips,setClips]=React.useState<Snippet[]>([]);
@@ -39,13 +54,23 @@ function App(){
  const [error,setError]=React.useState('');const [importing,setImporting]=React.useState<string|null>(null);
  const [recordPending,setRecordPending]=React.useState(false);
  const [sources,setSources]=React.useState<Record<string,string>>({});const [generated,setGenerated]=React.useState<Record<string,Preset>>({});
+ const [savedPresets,setSavedPresets]=React.useState<SavedPreset[]>(()=>loadSavedPresetsFromSession());
+ const [deleteUndoStack,setDeleteUndoStack]=React.useState<ClipDeleteUndo[]>([]);
  const engineRef=React.useRef<SessionEngine|null>(null);const recorderRef=React.useRef<Recorder|null>(null);
  const recordLock=React.useRef(false);const generationLock=React.useRef(false);
  const recordTarget=React.useRef<{trackId:string;start:number;perf:number}|null>(null);
+ const recordingRef=React.useRef(false);
  const fileInput=React.useRef<HTMLInputElement>(null);const importTarget=React.useRef('beat');
  const selected=clips.find(c=>c.id===selectedId)??null;
- React.useEffect(()=>{const engine=new SessionEngine(()=>{setPlaying(false);setPosition(0);});engineRef.current=engine;recorderRef.current=new Recorder();return()=>{engine.dispose();engineRef.current=null;};},[]);
- React.useEffect(()=>{engineRef.current?.sync(clips);engineRef.current?.setMixes(mixes,tracks.map(t=>t.id));},[clips,mixes,tracks]);
+ React.useEffect(()=>{recordingRef.current=recording;},[recording]);
+ React.useEffect(()=>{persistSavedPresetsToSession(savedPresets);},[savedPresets]);
+ React.useEffect(()=>{const engine=new SessionEngine(()=>{setPlaying(false);if(!recordingRef.current)setPosition(0);});engineRef.current=engine;recorderRef.current=new Recorder();const bootAudio=()=>{void Tone.start().then(()=>Promise.all([preloadNoiseGateWorklet(),preloadAutotuneMonitorWorklet(),preloadFormantAutotuneWorklet()])).catch((e:unknown)=>setError(e instanceof Error?e.message:String(e)));};window.addEventListener('pointerdown',bootAudio,{once:true});return()=>{window.removeEventListener('pointerdown',bootAudio);engine.dispose();engineRef.current=null;};},[]);
+ React.useEffect(()=>{
+  engineRef.current?.sync(clips);
+  const recordTrackId=recording?recordTarget.current?.trackId??null:null;
+  const effectiveMixes=recordTrackId?{...mixes,[recordTrackId]:{...(mixes[recordTrackId]??{db:0,muted:false,solo:false}),muted:true,solo:false}}:mixes;
+  engineRef.current?.setMixes(effectiveMixes,tracks.map(t=>t.id));
+ },[clips,mixes,tracks,recording]);
  React.useEffect(()=>{engineRef.current?.setMasterGain(masterDb);},[masterDb]);
  React.useEffect(()=>{engineRef.current?.setBypass(dry);},[dry]);
  React.useEffect(()=>{
@@ -54,16 +79,30 @@ function App(){
  },[playing,recording]);
  function stopPlayback(reset=false){engineRef.current?.stop();setPlaying(false);if(reset)setPosition(0);}
  function updateClip(id:string,patch:Partial<Snippet>,structural=false){if(recording||recordPending)return;if(structural)stopPlayback();setClips(current=>current.map(c=>c.id===id?{...c,...patch}:c));}
- const removeSelected=React.useCallback(()=>{if(!selectedId||recording||recordPending)return;engineRef.current?.stop();setPlaying(false);setClips(current=>deleteSnippet(current,selectedId));setSelectedId(null);setSources(current=>{const next={...current};delete next[selectedId];return next;});setGenerated(current=>{const next={...current};delete next[selectedId];return next;});},[selectedId,recording,recordPending]);
- React.useEffect(()=>{const handler=(event:KeyboardEvent)=>{if((event.key==='Backspace'||event.key==='Delete')&&!ignoresDeleteShortcut(event.target)&&selectedId&&!recording){event.preventDefault();removeSelected();}};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[selectedId,recording,removeSelected]);
+ const removeSelected=React.useCallback(()=>{if(!selectedId||recording||recordPending)return;const snippet=clips.find(c=>c.id===selectedId);if(!snippet)return;engineRef.current?.stop();setPlaying(false);setDeleteUndoStack(stack=>[{snippet,source:sources[selectedId],generated:generated[selectedId]},...stack].slice(0,MAX_UNDO_DELETES));setClips(current=>deleteSnippet(current,selectedId));setSelectedId(null);setSources(current=>{const next={...current};delete next[selectedId];return next;});setGenerated(current=>{const next={...current};delete next[selectedId];return next;});},[selectedId,recording,recordPending,clips,sources,generated]);
+ const undoDelete=React.useCallback(()=>{if(recording||recordPending||deleteUndoStack.length===0)return;const [entry,...rest]=deleteUndoStack;const {snippet,source,generated:generatedPreset}=entry;setDeleteUndoStack(rest);stopPlayback();setClips(current=>restoreDeletedClip(current,snippet));setSelectedId(snippet.id);if(source!==undefined)setSources(current=>({...current,[snippet.id]:source}));if(generatedPreset!==undefined)setGenerated(current=>({...current,[snippet.id]:structuredClone(generatedPreset)}));},[deleteUndoStack,recording,recordPending]);
+ React.useEffect(()=>{const handler=(event:KeyboardEvent)=>{if(ignoresDeleteShortcut(event.target)||recording||recordPending)return;if((event.key==='Backspace'||event.key==='Delete')&&selectedId){event.preventDefault();removeSelected();return;}if((event.key==='z'||event.key==='Z')&&(event.metaKey||event.ctrlKey)&&!event.shiftKey){event.preventDefault();undoDelete();}};window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[selectedId,recording,recordPending,removeSelected,undoDelete]);
  const features=React.useMemo(()=>selected?analyze(selected.buffer,selected.trim.start,selected.trim.end):null,[selected?.buffer,selected?.trim.start,selected?.trim.end]);
+ const monitorAutotune=React.useMemo(()=>{const node=selected?.preset.chain.find(n=>n.type==='autotune'&&n.enabled);if(!node||(node.params.mix??0)<=0)return null;return node.params;},[selected?.preset]);
+ function hasBackingClipsAt(trackId:string,at:number){return clips.some(c=>c.trackId!==trackId&&clipTimelineEndSec(c)>at);}
  async function startRecord(trackId=armedId){
   if(recordLock.current||recording)return;recordLock.current=true;setRecordPending(true);setError('');
-  const at=playing?(engineRef.current?.getSeconds()??position):position;stopPlayback();setPosition(at);setArmedId(trackId);
-  try{await recorderRef.current!.start(deviceId);recordTarget.current={trackId,start:at,perf:performance.now()};setRecordElapsed(0);setRecording(true);}catch(e){setError(e instanceof Error?e.message:'Could not start recording.');}finally{recordLock.current=false;setRecordPending(false);}
+  const wasPlaying=playing;
+  const at=wasPlaying?(engineRef.current?.getSeconds()??position):position;
+  if(!wasPlaying)stopPlayback();
+  setPosition(at);setArmedId(trackId);
+  try{
+   await recorderRef.current!.start(deviceId);
+   recordTarget.current={trackId,start:at,perf:performance.now()};
+   setRecordElapsed(0);setRecording(true);
+   if(!wasPlaying&&hasBackingClipsAt(trackId,at)){
+    const started=await engineRef.current?.play(at);
+    setPlaying(!!started);
+   }
+  }catch(e){setError(e instanceof Error?e.message:'Could not start recording.');}finally{recordLock.current=false;setRecordPending(false);}
  }
  async function stopRecord(){if(recordLock.current||!recording)return;recordLock.current=true;setRecordPending(true);const target=recordTarget.current;
-  try{const buffer=await recorderRef.current!.stop();if(target){const clip=newSnippet(buffer,`Take ${clips.filter(c=>c.trackId===target.trackId).length+1}`,target.trackId,target.start);setClips(current=>[...current,clip]);setSelectedId(clip.id);setPosition(target.start+buffer.duration);}}catch(e){setError(e instanceof Error?e.message:'Recording failed.');}finally{recordTarget.current=null;setRecording(false);setRecordElapsed(0);recordLock.current=false;setRecordPending(false);}
+  try{const buffer=await recorderRef.current!.stop();if(target){const clip=newSnippet(buffer,`Take ${clips.filter(c=>c.trackId===target.trackId).length+1}`,target.trackId,target.start);setClips(current=>[...current,clip]);setSelectedId(clip.id);setPosition(target.start+buffer.duration);}}catch(e){setError(e instanceof Error?e.message:'Recording failed.');}finally{recordTarget.current=null;setRecording(false);setRecordElapsed(0);stopPlayback();recordLock.current=false;setRecordPending(false);}
  }
  async function importFiles(files:File[],trackId:string){
   if(recording)return;setImporting(trackId);setError('');const at=position;stopPlayback();
@@ -75,6 +114,9 @@ function App(){
  async function play(){if(recording||!clips.length)return;setError('');try{const started=await engineRef.current?.play(position);setPlaying(!!started);}catch(e){setPlaying(false);setError('Unable to start audio playback. Try Play again.');}}
  function seek(sec:number){if(recording)return;const next=Math.max(0,sec);setPosition(next);if(playing)void engineRef.current?.play(next).catch(()=>{setPlaying(false);setError('Playback failed.');});}
  function setSelectedPreset(preset:Preset){if(!selected)return;const oldKey=selected.preset.chain.map(n=>n.id+':'+n.type).join('|');const newKey=preset.chain.map(n=>n.id+':'+n.type).join('|');updateClip(selected.id,{preset},oldKey!==newKey);setSources(current=>({...current,[selected.id]:'manual'}));}
+ function savePresetToSession(name:string){if(!selected||recording||recordPending)return;const preset=snapshotPreset(selected.preset);const label=name.trim()||preset.name||'Saved preset';setSavedPresets(current=>[{id:crypto.randomUUID(),name:label,preset,savedAt:Date.now()},...current].slice(0,MAX_SAVED_PRESETS));}
+ function applySavedPreset(id:string){if(!selected||recording||recordPending)return;const entry=savedPresets.find(p=>p.id===id);if(!entry)return;setSelectedPreset(presetForApply(entry.preset));}
+ function removeSavedPreset(id:string){setSavedPresets(current=>current.filter(p=>p.id!==id));}
  function addEffect(type:EffectType){if(!selected||selected.preset.chain.some(n=>n.type===type))return;const next={...selected.preset,chain:[...selected.preset.chain,{id:crypto.randomUUID(),type,enabled:true,params:defaultParams(type)}]};next.chain.sort((a,b)=>FIXED_ORDER.indexOf(a.type)-FIXED_ORDER.indexOf(b.type));setSelectedPreset(next);}
  async function generate(event:React.FormEvent){event.preventDefault();if(!selected||!features||!prompt.trim()||generationLock.current)return;const id=selected.id;generationLock.current=true;setGenerating(true);setError('');
   try{const response=await fetch('/api/presets/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt.trim(),features})});const data=await response.json().catch(()=>null);if(!response.ok||!data?.preset)throw new Error(data?.error??'Preset generation failed. Check that the API server is running.');const preset=validatePreset(data.preset);stopPlayback();setClips(current=>current.map(c=>c.id===id?{...c,preset}:c));setGenerated(current=>({...current,[id]:structuredClone(preset)}));setSources(current=>({...current,[id]:data.source??'model'}));}catch(e){setError(e instanceof Error?e.message:'Preset generation failed.');}finally{generationLock.current=false;setGenerating(false);}
@@ -83,7 +125,7 @@ function App(){
  return <TimelineScale.Provider value={zoom}><div className="daw" style={{'--px-per-sec':`${zoom}px`} as React.CSSProperties}>
   <div className="studio-heading"><span className="eyebrow">VOCAL STUDIO / SESSION 01</span><span className="session-local">● Browser-local audio</span></div>
   <TopBar playing={playing} recording={recording} pending={recordPending} canPlay={clips.length>0&&!recordPending} positionSec={position} dry={dry} masterDb={masterDb} onPlay={()=>void play()} onRecord={()=>void startRecord()} onStop={()=>recording?void stopRecord():stopPlayback(true)} onDryChange={setDry} onMasterDbChange={setMasterDb}/>
-  <InputPanel deviceId={deviceId} onDeviceChange={setDeviceId} recording={recording||recordPending}/>
+  <InputPanel deviceId={deviceId} onDeviceChange={setDeviceId} recording={recording||recordPending} monitorAutotune={monitorAutotune}/>
   <div className="session-toolbar"><label>Record into <select value={armedId} disabled={recording||recordPending} onChange={e=>setArmedId(e.target.value)}>{tracks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label><span>{recordPending?'Preparing audio…':recording?'Recording — Stop to keep this take':'New takes are added at the playhead. Existing clips stay in place.'}</span></div>
   {error&&<p className="session-error" role="alert">{error}</p>}
   <input ref={fileInput} type="file" multiple accept={AUDIO_FILE_ACCEPT} hidden onChange={e=>{const files=Array.from(e.target.files??[]);e.target.value='';if(files.length)void importFiles(files,importTarget.current);}}/>
@@ -107,7 +149,7 @@ function App(){
     </section>;
    })}
    <TimelinePlayhead positionSec={position} durationSec={timelineDuration} disabled={recording||recordPending} onPositionChange={seek}/>
-  </div></div><div className="arrangement-toolbar"><button type="button" className="arrangement-add-track" disabled={tracks.length>=MAX_TRACKS||recording||recordPending} onClick={addTrack}>Add track</button><button type="button" className="delete-snippet" disabled={!selected||recording||recordPending} onClick={removeSelected}>Delete clip <kbd>⌫</kbd></button><label className="timeline-zoom">Timeline zoom <input aria-label="Timeline zoom" type="range" min={20} max={120} step={10} value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label><span className="arrangement-cap-hint">Select a clip · Backspace/Delete removes it</span></div></div>
+  </div></div><div className="arrangement-toolbar"><button type="button" className="arrangement-add-track" disabled={tracks.length>=MAX_TRACKS||recording||recordPending} onClick={addTrack}>Add track</button><button type="button" className="undo-snippet" disabled={deleteUndoStack.length===0||recording||recordPending} onClick={undoDelete}>Undo delete <kbd>⌘Z</kbd></button><button type="button" className="delete-snippet" disabled={!selected||recording||recordPending} onClick={removeSelected}>Delete clip <kbd>⌫</kbd></button><label className="timeline-zoom">Timeline zoom <input aria-label="Timeline zoom" type="range" min={20} max={120} step={10} value={zoom} onChange={e=>setZoom(Number(e.target.value))}/></label><span className="arrangement-cap-hint">Select a clip · Backspace/Delete removes it · Undo restores the last deleted clip</span></div></div>
   <aside className="sound-workspace" aria-label="Sound inspector">
    <div className="inspector-tabs" role="tablist" aria-label="Clip tools">{(['clip','effects','ai'] as const).map(tab=><button key={tab} id={`tab-${tab}`} type="button" role="tab" aria-selected={panel===tab} aria-controls={`panel-${tab}`} tabIndex={panel===tab?0:-1} onClick={()=>setPanel(tab)} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();const tabs=['clip','effects','ai'] as const;const next=tabs[(tabs.indexOf(tab)+(e.key==='ArrowRight'?1:2))%3];setPanel(next);document.getElementById(`tab-${next}`)?.focus();}}}>{tab==='clip'?'Clip':tab==='effects'?'Effects':'AI preset'}</button>)}</div>
    <div className="inspector-content">
@@ -124,7 +166,9 @@ function App(){
    <button className="inspector-delete" type="button" disabled={recording||recordPending} onClick={removeSelected}>Delete selected clip <kbd>⌫</kbd></button>
    </div><div id="panel-effects" role="tabpanel" aria-labelledby="tab-effects" hidden={panel!=='effects'}>
    <h2 className="section-title">Effects for this clip</h2><div className="effect-picker">{FIXED_ORDER.map(type=><button key={type} type="button" disabled={recording||selected.preset.chain.some(n=>n.type===type)} onClick={()=>addEffect(type)}>+ {type}</button>)}</div>
-   {selected.preset.chain.length>0&&<EffectsPanel compact preset={selected.preset} source={sources[selected.id]??'manual'} onParamChange={(id,key,value)=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.map(n=>n.id===id?{...n,params:{...n.params,[key]:value}}:n)})} onEnabledChange={(id,enabled)=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.filter(n=>n.id!==id)})} onReset={generated[selected.id]?()=>setSelectedPreset(structuredClone(generated[selected.id])):undefined}/>}</div>
+   {selected.preset.chain.length>0&&<EffectsPanel compact preset={selected.preset} source={sources[selected.id]??'manual'} onParamChange={(id,key,value)=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.map(n=>n.id===id?{...n,params:{...n.params,[key]:value}}:n)})} onEnabledChange={(id,enabled)=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setSelectedPreset({...selected.preset,chain:selected.preset.chain.filter(n=>n.id!==id)})} onReset={generated[selected.id]?()=>setSelectedPreset(structuredClone(generated[selected.id])):undefined}/>}
+   <SavedPresetsPanel disabled={recording||recordPending} currentPresetName={selected.preset.name} savedPresets={savedPresets} onSave={savePresetToSession} onApply={applySavedPreset} onRemove={removeSavedPreset}/>
+   </div>
    </>:<p className="input-help">Click a clip in the timeline to edit its sound. Each snippet has its own settings and effect chain.</p>}
   </section><section className="daw-prompt" id="panel-ai" role="tabpanel" aria-labelledby="tab-ai" hidden={panel!=='ai'}><PromptBox prompt={prompt} busy={generating||recording} hasTake={!!selected} onPromptChange={setPrompt} onGenerate={generate}/></section></div></aside>
   <div className="studio-mixer"><TrackMixer tracks={tracks} mixes={mixes} onChange={(id,mix)=>setMixes(current=>({...current,[id]:mix}))}/></div>

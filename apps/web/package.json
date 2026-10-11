@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run copy-rubberband && tsc --noEmit && vite build",
+    "copy-rubberband": "node scripts/copy-rubberband.mjs",
     "check": "tsc --noEmit"
   },
   "dependencies": {
@@ -12,6 +13,7 @@
     "pitchy": "^4.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "rubberband-wasm": "^3.3.0",
     "tone": "^15.1.22",
     "wavesurfer.js": "^8.0.2",
     "zod": "^4.6.5"

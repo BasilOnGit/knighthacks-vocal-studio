@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {newSnippet,overlapRows,deleteSnippet,ignoresDeleteShortcut} from '../apps/web/src/session/snippets.ts';
+import {newSnippet,overlapRows,deleteSnippet,restoreDeletedClip,ignoresDeleteShortcut} from '../apps/web/src/session/snippets.ts';
 const buffer={duration:5};
 test('new recording appends independent clips on the same track',()=>{
  const first=newSnippet(buffer,'Take 1','track',0,'first');const second=newSnippet(buffer,'Take 2','track',2,'second');
@@ -13,6 +13,12 @@ test('overlaps occupy separate rows without changing source or time',()=>{
 test('deleting a selected snippet preserves the others',()=>{
  const a=newSnippet(buffer,'A','vocal',0,'a');const b=newSnippet(buffer,'B','vocal',1,'b');
  assert.deepEqual(deleteSnippet([a,b],'a').map(c=>c.id),['b']);assert.equal(deleteSnippet([a,b],'missing').length,2);
+});
+test('restoreDeletedClip brings back a removed snippet',()=>{
+ const a=newSnippet(buffer,'A','vocal',0,'a');const b=newSnippet(buffer,'B','vocal',1,'b');
+ const afterDelete=deleteSnippet([a,b],'a');
+ assert.deepEqual(restoreDeletedClip(afterDelete,a).map(c=>c.id),['b','a']);
+ assert.equal(restoreDeletedClip([a,b],a).length,2);
 });
 test('clip sound options do not change another snippet',()=>{
  const a=newSnippet(buffer,'A','vocal',0,'a');const b=newSnippet(buffer,'B','beat',0,'b');

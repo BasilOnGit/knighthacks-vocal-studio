@@ -1,5 +1,6 @@
 import { fakePreset } from '../../../shared/fakePreset.ts';
-import { FIXED_ORDER, MAX_EFFECTS, PARAM_RANGES, fillParams } from '../../../shared/params.ts';
+import { buildMixingGuideForModel } from '../../../shared/mixingGuide.ts';
+import { MAX_EFFECTS, PARAM_RANGES, fillParams } from '../../../shared/params.ts';
 import { validatePreset } from '../../../shared/validate.ts';
 
 const FEATURE_KEYS = [
@@ -23,49 +24,33 @@ const CATALOG = Object.entries(PARAM_RANGES)
   })
   .join('\n');
 
-const PROTOCOL_ORDER = FIXED_ORDER.join(' → ');
+const MIXING_GUIDE = buildMixingGuideForModel();
 
-const SYSTEM_PROMPT = `You are a vocal mixing engineer. Output JSON only, matching the schema, no prose.
+const SYSTEM_PROMPT = `You are an expert vocal mixing engineer. Output JSON only, matching the schema, no prose.
 Schema: {"name": string, "explanation": string, "chain": [{"type": string, "params": {parameter: number}, "why": string}]}
 Use only catalog effects and parameters. Stay inside ranges. Never more than ${MAX_EFFECTS} effects.
-List effects in signal order (first in chain = hits the vocal first). The host keeps your order; it does not reorder.
-You may include the same type more than once (e.g. two eq nodes: subtractive then additive).
-Write a short why for each effect and a one-sentence explanation.
+The chain array is serial signal flow: index 0 processes the vocal first. The host applies your order exactly — it never re-sorts.
+You choose which effects to include and their order based on the user's prompt and the voice features. Do not paste a default template chain every time.
+You may include the same type more than once (e.g. two eq nodes). Write a short why per effect (mention placement when order is unusual).
+The explanation field should summarize the sonic goal and why this chain order serves the prompt.
 The code fills missing parameters and assigns ids.
 
-Mixing protocol (follow unless the user's prompt clearly contradicts a step):
-1. gate — only when noiseFloorDb is high (noisy room); omit on clean takes
-2. autotune — when the user asks for autotune, T-Pain, trap, hyperpop, polished pitch, or modern R&B; mix 0.5–1, speed 0.7–1; omit for raw/natural/unprocessed vocals
-3. eq (subtractive) — always: HPF via lowCutHz, cut mud with bodyDb if needed, avoid large boosts here
-4. compressor — always; faster attack (3–10 ms) and ratio 4–8 for punch; add makeupDb 2–4 dB when loudnessDb is low
-5. deesser — default on; lighter mix if centroid is already high (bright voice)
-6. eq (additive) — when the style needs presence/air (bright, pop, radio); skip for dark, lo-fi, telephone
-7. saturation — default light drive/mix for punch; more for gritty or aggressive
-8. chorus / delay — only for wide, dreamy, slap, or spacious prompts
-9. reverb — always unless the user asked for dry / no reverb / bone-dry; intimate = short decay and low mix, anthemic = longer and wetter
+Workflow (internal, before you write JSON):
+1. Interpret the prompt (genre, mood, references, dry/wet, tuned/raw, bright/dark).
+2. Select effects that match — omit what the prompt does not need.
+3. Sequence them deliberately for that sound (not a fixed master bus order).
+4. Set parameters using features and the catalog ranges.
 
-Do not skip eq, compressor, deesser, or reverb just to keep the chain short. Default mixes should feel forward and punchy, not washed out.
+Parameter habits:
+compressor — kneeDb 6–12, mix 0.75–0.9 for parallel glue; ratio 3–6 intimate, 4–8 punchy; makeupDb 2–5 when loudnessDb is low
+saturation — drive 0.08–0.2, mix 0.1–0.25 unless gritty/lo-fi requested
+delay — mix usually under 0.25, feedback under 0.35 on leads
+reverb — intimate: decay under 1 s, preDelay 20–40 ms, mix 0.08–0.14; spacious: decay 2–5 s, higher mix
 
-Catalog:
-${CATALOG}
+${MIXING_GUIDE}
 
-Recommended signal order reference: ${PROTOCOL_ORDER}
-
-Adapting to the voice:
-Centroid already high (bright voice): boost air less, deesser mix lower. Centroid low (dark voice): presence and air more.
-Low loudness: gentler threshold and add makeup gain.
-High noise floor: add gate, avoid heavy compression and large high-frequency boosts.
-
-Descriptor guide:
-warm: lowShelfDb +2 to +3, airDb -1 to 0, mild compression (ratio 2 to 3), reverb mix ~0.12
-airy, bright: airDb +3 to +5, presenceDb +1 to +2
-intimate, close: compressor ratio 3 to 4, short reverb (decay under 1 s, mix 0.12 or less), no delay
-dreamy, spacious: reverb mix 0.3 to 0.45, decay 3 to 4.5 s, delay mix 0.15 to 0.25 at 350 to 450 ms, light chorus
-punchy, aggressive: compressor ratio 5 to 8, attack 3 to 8 ms, release 60 to 120 ms, makeupDb 3 to 5, saturation drive 0.25 to 0.45, mix 0.2 to 0.35, presenceDb +3 to +5, bodyDb -2 if muddy
-trap, autotune, T-Pain: autotune mix 0.7 to 1, speed 0.8 to 1, snap 0.85 to 1, then tight compression (ratio 5+, attack under 10 ms)
-gritty, lo-fi: saturation mix 0.3 to 0.5, airDb -4, lowCutHz ~150
-radio, telephone: lowCutHz ~300 Hz, airDb -6, presenceDb +4, skip second eq
-wide, thick: chorus mix 0.25 to 0.35, short delay mix 0.1`;
+Catalog (parameter ranges):
+${CATALOG}`;
 
 export function validatePrompt(body) {
   if (!body || typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 1000) {
@@ -93,10 +78,21 @@ export function promptRejectsSpace(prompt) {
   return /\b(dry|no reverb|bone-?dry|without reverb|a cappella dry)\b/i.test(prompt);
 }
 
+const LEADING_CLEANUP_TYPES = new Set(['gate', 'autotune']);
+
+/** Insert EQ after gate/autotune blocks so model-chosen pitch/noise order is preserved. */
+export function eqInsertIndex(chain) {
+  let index = 0;
+  while (index < chain.length && LEADING_CLEANUP_TYPES.has(chain[index].type)) {
+    index += 1;
+  }
+  return index;
+}
+
 export function ensureMixProtocol(preset, prompt) {
   const chain = [...preset.chain];
   if (!chain.some((node) => node.type === 'eq')) {
-    chain.unshift({
+    chain.splice(eqInsertIndex(chain), 0, {
       type: 'eq',
       params: fillParams('eq', { lowCutHz: 80 }),
       why: 'Default high-pass cleanup',
@@ -130,6 +126,7 @@ function userMessage(prompt, features, errorNote) {
   const lines = [
     `Prompt: ${prompt}`,
     `Features: ${JSON.stringify(features)}`,
+    'Build a custom chain: choose effects and their order for this prompt and voice. Do not output a generic chain unless the prompt is generic.',
   ];
   if (errorNote) {
     lines.push(`The previous output failed validation: ${errorNote.slice(0, 500)}`);
