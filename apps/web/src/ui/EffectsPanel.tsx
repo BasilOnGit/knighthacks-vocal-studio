@@ -1,8 +1,11 @@
 import React from 'react';
 import { PITCH_CLASS_NAMES } from '../../../../shared/musicKey';
+import { effectDisplayName } from '../../../../shared/effectLabels';
 import { PARAM_RANGES, type ParamRange } from '../../../../shared/params';
 import type { EffectNode, EffectType, Preset } from '../../../../shared/types';
 import { EqSpectrumEditor } from './EqSpectrumEditor';
+import { ChevronDown, ChevronUp, ICON_SIZE, ICON_STROKE, Trash2 } from './icons';
+import { ToggleButton } from './ToggleButton';
 
 const GATE_LABELS: Record<string, string> = {
   thresholdDb: 'Threshold',
@@ -72,13 +75,18 @@ const EQ_LABELS: Record<string, string> = {
 };
 
 const AUTOTUNE_LABELS: Record<string, string> = {
-  mix: 'Correct',
-  retuneSpeed: 'Retune speed (up to 400%)',
-  speed: 'Legacy speed (unused)',
-  snap: 'Snap — note lock (100% = trap / T-Pain style)',
+  mix: 'Correction amount',
+  retuneSpeed: 'Correction speed',
+  snap: 'Note snap',
   key: 'Key',
   scaleMajor: 'Scale',
   shiftSemitones: 'Pitch shift (semitones)',
+};
+
+const CHORUS_LABELS: Record<string, string> = {
+  rateHz: 'Rate',
+  depth: 'Depth',
+  mix: 'Mix',
 };
 
 function sliderStep(min: number, max: number): number {
@@ -95,7 +103,7 @@ function mixControlLabel(type: EffectType): string {
   if (type === 'compressor') return 'Mix';
   if (type === 'saturation') return 'Mix';
   if (type === 'deesser') return 'Amount';
-  if (type === 'autotune') return 'Correct';
+  if (type === 'autotune') return 'Correction';
   if (type === 'chorus') return 'Wet';
   return 'Mix';
 }
@@ -145,6 +153,9 @@ function paramLabel(type: EffectType, key: string): string {
   if (type === 'doubler' && key in DOUBLER_LABELS) {
     return DOUBLER_LABELS[key];
   }
+  if (type === 'chorus' && key in CHORUS_LABELS) {
+    return CHORUS_LABELS[key];
+  }
   if (key === 'pingPong') {
     return 'Ping-pong';
   }
@@ -156,11 +167,8 @@ function paramLabel(type: EffectType, key: string): string {
 
 function effectTypeLabel(node: EffectNode, preset: Preset): string {
   const siblings = preset.chain.filter((entry) => entry.type === node.type);
-  if (siblings.length <= 1) {
-    return node.type;
-  }
   const index = siblings.findIndex((entry) => entry.id === node.id) + 1;
-  return `${node.type} ${index}`;
+  return effectDisplayName(node.type, siblings.length > 1 ? index : undefined);
 }
 
 export function EffectsPanel({
@@ -173,6 +181,7 @@ export function EffectsPanel({
   editedSinceGenerate,
   generateSummary,
   onParamChange,
+  onEditStart,
   onEnabledChange,
   onReset,
   onRemove,
@@ -189,6 +198,7 @@ export function EffectsPanel({
   editedSinceGenerate?: boolean;
   generateSummary?: string[] | null;
   onParamChange: (id: string, key: string, value: number) => void;
+  onEditStart?: () => void;
   onEnabledChange: (id: string, enabled: boolean) => void;
   onReset?: () => void;
   onRemove: (id: string) => void;
@@ -200,7 +210,7 @@ export function EffectsPanel({
     <section className="preset" aria-label="Preset">
       {trackLabel ? <p className="track-fx-label">Track effects · {trackLabel}</p> : null}
       {source === 'fallback' ? (
-        <p className="fixture-label">Using fallback preset, AI unavailable</p>
+        <p className="fixture-label status-pill">Offline preset</p>
       ) : null}
       {generateSummary && generateSummary.length > 0 ? (
         <ul className="preset-change-summary">
@@ -218,7 +228,7 @@ export function EffectsPanel({
         </p>
       ) : null}
       <div className="preset-heading-row">
-        <h2>{preset.name}</h2>
+        <h2 className="preset-title">{preset.name}</h2>
         {onClearAll ? (
           <button
             type="button"
@@ -230,7 +240,7 @@ export function EffectsPanel({
           </button>
         ) : null}
       </div>
-      <p>{preset.explanation}</p>
+      <p className="preset-explanation">{preset.explanation}</p>
       <ul className="chain">
         {preset.chain.map((node, index) => (
           <EffectCard
@@ -241,6 +251,7 @@ export function EffectsPanel({
             canMoveDown={index < preset.chain.length - 1}
             onMove={onMove}
             onParamChange={onParamChange}
+            onEditStart={onEditStart}
             onEnabledChange={onEnabledChange}
             onRemove={onRemove}
             trackId={trackId}
@@ -249,7 +260,6 @@ export function EffectsPanel({
           />
         ))}
       </ul>
-      {onReset && <button type="button" onClick={onReset}>Reset to generated preset</button>}
     </section>
   );
 }
@@ -261,6 +271,7 @@ function EffectCard({
   canMoveDown,
   onMove,
   onParamChange,
+  onEditStart,
   onEnabledChange,
   onRemove,
   trackId,
@@ -273,6 +284,7 @@ function EffectCard({
   canMoveDown: boolean;
   onMove?: (id: string, delta: -1 | 1) => void;
   onParamChange: (id: string, key: string, value: number) => void;
+  onEditStart?: () => void;
   onEnabledChange: (id: string, enabled: boolean) => void;
   onRemove: (id: string) => void;
   trackId?: string;
@@ -282,7 +294,9 @@ function EffectCard({
   const ranges = PARAM_RANGES[node.type];
   const mixRange = 'mix' in ranges ? ranges.mix : null;
   const mixValue = mixRange ? (node.params.mix ?? mixRange.default) : 0;
-  const paramEntries = Object.entries(ranges).filter(([key]) => key !== 'mix');
+  const paramEntries = Object.entries(ranges).filter(
+    ([key]) => key !== 'mix' && !(node.type === 'autotune' && key === 'speed'),
+  );
   const primaryParams = paramEntries.filter(([, range]) => !range.advanced);
   const advancedParams = paramEntries.filter(([, range]) => range.advanced);
 
@@ -299,9 +313,10 @@ function EffectCard({
           <select
             aria-label={`${node.type} key`}
             value={keyIndex}
-            onChange={(event) =>
-              onParamChange(node.id, key, Number(event.target.value))
-            }
+            onChange={(event) => {
+              onEditStart?.();
+              onParamChange(node.id, key, Number(event.target.value));
+            }}
           >
             {PITCH_CLASS_NAMES.map((name, index) => (
               <option key={name} value={index}>{name}</option>
@@ -319,9 +334,10 @@ function EffectCard({
           <select
             aria-label={`${node.type} scale`}
             value={major}
-            onChange={(event) =>
-              onParamChange(node.id, key, Number(event.target.value))
-            }
+            onChange={(event) => {
+              onEditStart?.();
+              onParamChange(node.id, key, Number(event.target.value));
+            }}
           >
             <option value={1}>Major</option>
             <option value={0}>Minor</option>
@@ -353,6 +369,7 @@ function EffectCard({
           step={step}
           value={value}
           aria-label={`${node.type} ${key}`}
+          onPointerDown={() => onEditStart?.()}
           onChange={(event) => onParamChange(node.id, key, Number(event.target.value))}
         />
         <input
@@ -363,6 +380,7 @@ function EffectCard({
           max={range.max}
           step={step}
           value={Number(formatValue(value, step))}
+          onFocus={() => onEditStart?.()}
           onChange={(e) => {
             const n = e.target.valueAsNumber;
             if (Number.isFinite(n)) {
@@ -380,51 +398,58 @@ function EffectCard({
       <div className="effect-card-layout">
         <div className="effect-card-main">
           <div className="effect-head">
-            <div>
-              <strong>{typeLabel}</strong>
-              {node.why ? <span> — {node.why}</span> : null}
+            <div className="effect-head__text">
+              <strong className="effect-head__name">{typeLabel}</strong>
+              {node.why ? <p className="effect-head__why">{node.why}</p> : null}
             </div>
-            <label className="transport-toggle">
-              <input
-                type="checkbox"
-                checked={node.enabled}
-                onChange={(event) => onEnabledChange(node.id, event.target.checked)}
-              />
-              On
-            </label>
+            <div className="effect-head__controls">
+              <ToggleButton
+                size="sm"
+                variant="onOff"
+                pressed={node.enabled}
+                onToggle={() => onEnabledChange(node.id, !node.enabled)}
+              >
+                {node.enabled ? 'On' : 'Off'}
+              </ToggleButton>
+              <div className="effect-head__tools">
+                {onMove ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-icon btn-icon--sm"
+                      disabled={!canMoveUp}
+                      aria-label={`Move ${node.type} up`}
+                      onClick={() => onMove(node.id, -1)}
+                    >
+                      <ChevronUp size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-icon btn-icon--sm"
+                      disabled={!canMoveDown}
+                      aria-label={`Move ${node.type} down`}
+                      onClick={() => onMove(node.id, 1)}
+                    >
+                      <ChevronDown size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn-icon btn-icon--sm btn-icon--danger remove-effect"
+                  aria-label={`Remove ${node.type}`}
+                  onClick={() => onRemove(node.id)}
+                >
+                  <Trash2 size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+                </button>
+              </div>
+            </div>
           </div>
-          {onMove ? (
-            <div className="effect-order-actions">
-              <button
-                type="button"
-                disabled={!canMoveUp}
-                aria-label={`Move ${node.type} up`}
-                onClick={() => onMove(node.id, -1)}
-              >
-                ↑
-              </button>
-              <button
-                type="button"
-                disabled={!canMoveDown}
-                aria-label={`Move ${node.type} down`}
-                onClick={() => onMove(node.id, 1)}
-              >
-                ↓
-              </button>
-            </div>
-          ) : null}
-          <button
-            type="button"
-            className="remove-effect"
-            aria-label={`Remove ${node.type}`}
-            onClick={() => onRemove(node.id)}
-          >
-            Remove
-          </button>
           {node.type === 'eq' ? (
             <EqSpectrumEditor
               params={node.params}
               enabled={node.enabled}
+              onEditStart={onEditStart}
               onParamChange={(key, value) => onParamChange(node.id, key, value)}
               getSpectrumDb={trackId ? getSpectrumDb : undefined}
               sampleRate={audioSampleRate}
@@ -457,6 +482,7 @@ function EffectCard({
               max={mixRange.max}
               step={sliderStep(mixRange.min, mixRange.max)}
               value={mixValue}
+              onPointerDown={() => onEditStart?.()}
               onChange={(event) =>
                 onParamChange(node.id, 'mix', Number(event.target.value))
               }

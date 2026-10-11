@@ -9,6 +9,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
+    "lucide-react": "^1.55.0",
     "meyda": "^5.6.3",
     "pitchy": "^4.1.0",
     "react": "^19.0.0",

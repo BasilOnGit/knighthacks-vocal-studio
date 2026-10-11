@@ -1,6 +1,8 @@
 import React, { type FormEvent } from 'react';
 import type { VoiceFeatures } from '../../../../shared/types';
 import type { AiTurn } from '../session/aiThread';
+import { ICON_SIZE, ICON_STROKE, Wand2 } from './icons';
+import { InspectorSection } from './InspectorSection';
 
 const STYLES: Record<string, string> = {
   'Warm R&B': 'Warm, intimate R&B vocals with gentle compression and a short reverb.',
@@ -13,19 +15,19 @@ const STYLES: Record<string, string> = {
 function featureHints(features: VoiceFeatures): string[] {
   const hints: string[] = [];
   if (features.noiseFloorDb > -45) {
-    hints.push('Noisy room — try denoise, gate, or a cleaner take in the prompt.');
+    hints.push('Background noise is elevated — try denoise or a noise gate.');
   }
   if (features.crestDb > 14) {
-    hints.push('Big level swings — mention rider or smooth broadcast level.');
+    hints.push('Levels move a lot — a compressor or level rider can even them out.');
   }
   if (features.centroidHz > 3200) {
-    hints.push('Bright voice — ask for less air or a darker tone if it feels harsh.');
+    hints.push('The take is bright — mention less air or a darker tone if it feels harsh.');
   }
   if (features.centroidHz < 2200) {
-    hints.push('Dark voice — presence or air in the prompt can help clarity.');
+    hints.push('The take is dark — ask for more presence or clarity in the prompt.');
   }
   if (features.loudnessDb < -24) {
-    hints.push('Quiet recording — compression or makeup in the prompt may help.');
+    hints.push('The take is quiet — compression or makeup gain in the prompt may help.');
   }
   return hints;
 }
@@ -33,11 +35,9 @@ function featureHints(features: VoiceFeatures): string[] {
 export function PromptBox({
   prompt,
   busy,
-  hasTake,
+  hasTrackAudio,
   features,
   thread,
-  trackLabel,
-  otherTrackNames,
   onPromptChange,
   onGenerate,
   onFollowUp,
@@ -45,11 +45,9 @@ export function PromptBox({
 }: {
   prompt: string;
   busy: boolean;
-  hasTake: boolean;
+  hasTrackAudio: boolean;
   features: VoiceFeatures | null;
   thread: AiTurn[];
-  trackLabel?: string;
-  otherTrackNames?: string[];
   onPromptChange: (value: string) => void;
   onGenerate: (event: FormEvent) => void;
   onFollowUp: (event: FormEvent) => void;
@@ -57,26 +55,27 @@ export function PromptBox({
 }) {
   const hints = features ? featureHints(features) : [];
   const isFollowUp = thread.length > 0;
+  const statusLabel = !hasTrackAudio
+    ? 'Add audio to this track'
+    : !features
+      ? 'Analyzing…'
+      : 'Ready';
 
   return (
     <form
-      className="prompt-form"
+      className="prompt-form inspector-panel"
       onSubmit={isFollowUp ? onFollowUp : onGenerate}
     >
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">YOUR SOUND, IN WORDS</span>
-          <h2>Shape your vocal</h2>
-        </div>
-        <span className="status-pill">{hasTake ? 'Take ready' : 'Record a take first'}</span>
-      </div>
-      <p className="ai-honesty">
-        The AI reads your text and measured voice stats — not the raw audio.
-        {trackLabel ? ` Chat is per track (${trackLabel}).` : ''}
-        {otherTrackNames && otherTrackNames.length > 0
-          ? ` Generate also reads ${otherTrackNames.join(', ')} for consistency.`
-          : ''}
-      </p>
+      <InspectorSection title="Style">
+        <span className="status-pill">{statusLabel}</span>
+      </InspectorSection>
+      <details className="ai-stats-details">
+        <summary>How generation uses your take</summary>
+        <p className="input-help">
+          Your prompt is combined with measured stats from this track&apos;s audio (not the raw
+          waveform). Generated presets apply to the whole track.
+        </p>
+      </details>
       <div className="style-chips" aria-label="Style suggestions">
         {Object.entries(STYLES).map(([name, text]) => (
           <button
@@ -92,7 +91,7 @@ export function PromptBox({
       {thread.length > 0 ? (
         <ol className="ai-thread" aria-label="Prior AI turns">
           {thread.map((turn, index) => (
-            <li key={`${turn.at}-${index}`}>
+            <li key={`${turn.at}-${index}`} className="card ai-thread-card">
               <p className="ai-thread-user"><strong>You:</strong> {turn.prompt}</p>
               <p className="ai-thread-assistant">
                 <strong>{turn.name}</strong> — {turn.explanation}
@@ -109,7 +108,7 @@ export function PromptBox({
         </ul>
       ) : null}
       <label htmlFor="prompt">
-        {isFollowUp ? 'Follow-up' : 'Describe the sound you want'}
+        {isFollowUp ? 'Follow-up' : 'Describe the sound'}
       </label>
       <textarea
         id="prompt"
@@ -118,8 +117,8 @@ export function PromptBox({
         onChange={(e) => onPromptChange(e.target.value)}
         placeholder={
           isFollowUp
-            ? 'e.g. less reverb, brighter, more autotune…'
-            : 'Try: intimate vocals, a warm tone, and a soft echo…'
+            ? 'e.g. less reverb, brighter, more pitch correction…'
+            : 'e.g. warm vocal, light compression, short room reverb…'
         }
         required
       />
@@ -135,15 +134,14 @@ export function PromptBox({
             New conversation
           </button>
         ) : null}
-        <button className="generate-button" disabled={busy || !hasTake || !prompt.trim()}>
-          {busy ? 'Finding your sound…' : isFollowUp ? 'Follow up ↗' : 'Generate ↗'}
+        <button
+          className="generate-button btn-primary"
+          disabled={busy || !hasTrackAudio || !features || !prompt.trim()}
+        >
+          <Wand2 size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+          {busy ? 'Working…' : isFollowUp ? 'Refine' : 'Generate'}
         </button>
       </div>
-      <p className="input-help">
-        {hasTake
-          ? 'Presets apply to the whole track (all clips on that track). Fine-tune every effect in the Effects tab.'
-          : 'Record a vocal using the red Record button, then choose a style or write your own.'}
-      </p>
     </form>
   );
 }

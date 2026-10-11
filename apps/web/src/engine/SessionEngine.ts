@@ -36,6 +36,11 @@ const AUTOTUNE_TICK_SEC = 0.02;
 const MAX_COMPENSATION_SEC = 0.5;
 const COMP_RAMP_SEC = 0.025;
 const SEEK_FADE_IN_SEC = 0.008;
+/** Minimum lead before clip starts (wired headphones are usually fine at this). */
+const MIN_SCHEDULE_LEAD_SEC = 0.05;
+/** Extra pad on top of `AudioContext.outputLatency` (Bluetooth often reports 100–250 ms). */
+const SCHEDULE_LEAD_PAD_SEC = 0.04;
+const MAX_SCHEDULE_LEAD_SEC = 0.4;
 const SPECTRUM_FFT_SIZE = 1024;
 
 export class SessionEngine {
@@ -55,8 +60,10 @@ export class SessionEngine {
   private workletsReady = false;
   private transportActive = false;
   private clipSyncSignature = '';
+  private clipTimingSyncSignature = '';
   private trackSyncSignature = '';
   private spectrumTapTrackId: string | null = null;
+  private playbackEndWaiters = new Set<() => void>();
 
   constructor(private onEnded: () => void) {
     this.master = new Tone.Gain(1);
@@ -131,6 +138,10 @@ export class SessionEngine {
     const clipsChanged = clipSignature !== this.clipSyncSignature;
     this.clipSyncSignature = clipSignature;
 
+    const timingSignature = this.clipsTimingSignature(clips);
+    const clipTimingChanged = timingSignature !== this.clipTimingSyncSignature;
+    this.clipTimingSyncSignature = timingSignature;
+
     const trackSignature = [...trackIds].sort().join(',');
     const tracksChanged = trackSignature !== this.trackSyncSignature;
     this.trackSyncSignature = trackSignature;
@@ -167,6 +178,16 @@ export class SessionEngine {
     if (clipsChanged || tracksChanged || chainsStructureChanged) {
       this.updateCompensation();
     }
+
+    if (this.transportActive && clipTimingChanged) {
+      this.scheduleTimeline(this.getSeconds());
+    }
+  }
+
+  private clipsTimingSignature(clips: Snippet[]): string {
+    return clips
+      .map((c) => `${c.id}:${c.trim.start}:${c.trim.end}:${c.clipStartSec}`)
+      .join('|');
   }
 
   private clipsSyncSignature(clips: Snippet[]): string {
@@ -240,7 +261,13 @@ export class SessionEngine {
       autotuneSourceKey: '',
       autotuneClipId: '',
     };
-    chain.onLatencyChange(() => this.updateCompensation());
+    chain.onLatencyChange(() => {
+      if (this.transportActive) {
+        this.snapCompensation();
+      } else {
+        this.updateCompensation();
+      }
+    });
     this.trackSlots.set(trackId, track);
     return track;
   }
@@ -291,6 +318,13 @@ export class SessionEngine {
     return active ?? onTrack[0];
   }
 
+  private snapDelaySec(delay: Tone.Delay, seconds: number): void {
+    const param = delay.delayTime;
+    const now = Tone.now();
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(seconds, now);
+  }
+
   private rampDelaySec(delay: Tone.Delay, seconds: number): void {
     const param = delay.delayTime;
     const current = Number(param.value);
@@ -303,7 +337,34 @@ export class SessionEngine {
     param.rampTo(seconds, COMP_RAMP_SEC);
   }
 
+  /** Align dry/wet paths instantly — required on transport start to avoid comb filtering. */
+  private snapCompensation(): void {
+    if (this.dry) {
+      this.compensationSec = 0;
+      for (const track of this.trackSlots.values()) {
+        this.snapDelaySec(track.dryComp, 0);
+        this.snapDelaySec(track.wetComp, 0);
+      }
+      return;
+    }
+    let longest = 0;
+    for (const track of this.trackSlots.values()) {
+      longest = Math.max(longest, track.chain.latencySec);
+    }
+    longest = Math.min(MAX_COMPENSATION_SEC, longest);
+    this.compensationSec = longest;
+    for (const track of this.trackSlots.values()) {
+      const own = Math.min(longest, track.chain.latencySec);
+      this.snapDelaySec(track.dryComp, longest);
+      this.snapDelaySec(track.wetComp, longest - own);
+    }
+  }
+
   private updateCompensation(): void {
+    if (this.transportActive) {
+      this.snapCompensation();
+      return;
+    }
     if (this.dry) {
       this.compensationSec = 0;
       for (const track of this.trackSlots.values()) {
@@ -358,6 +419,40 @@ export class SessionEngine {
     return Math.max(this.playFrom, Tone.getTransport().seconds - this.compensationSec);
   }
 
+  /** Tap the post-limiter bus for offline export (Tone.Recorder). */
+  connectExportTap(recorder: Tone.Recorder): void {
+    this.limiter.connect(recorder);
+  }
+
+  disconnectExportTap(recorder: Tone.Recorder): void {
+    try {
+      this.limiter.disconnect(recorder);
+    } catch {
+      // Not connected.
+    }
+  }
+
+  /** Extra capture time after the transport stops (latency + schedule lead). */
+  getPostExportPadSec(): number {
+    return this.compensationSec + this.scheduleLeadSec() + 0.1;
+  }
+
+  waitForPlaybackEnd(): Promise<void> {
+    if (!this.transportActive) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.playbackEndWaiters.add(resolve);
+    });
+  }
+
+  private resolvePlaybackEndWaiters(): void {
+    for (const resolve of this.playbackEndWaiters) {
+      resolve();
+    }
+    this.playbackEndWaiters.clear();
+  }
+
   private clearTransportEvents(): void {
     const transport = Tone.getTransport();
     if (this.endEvent !== null) {
@@ -396,9 +491,15 @@ export class SessionEngine {
     this.revision++;
     this.haltTransport();
     this.playFrom = 0;
+    this.resolvePlaybackEndWaiters();
     for (const track of this.trackSlots.values()) {
       track.chain.resetEffectTails();
     }
+  }
+
+  /** Preload worklets so synchronous `seekTo` works (e.g. after first pointer interaction). */
+  async warmWorklets(): Promise<void> {
+    await this.ensureAudioReady();
   }
 
   private async ensureAudioReady(): Promise<void> {
@@ -409,20 +510,40 @@ export class SessionEngine {
     }
   }
 
+  /** How far ahead to schedule clips — grows on high-latency outputs (e.g. AirPods). */
+  private scheduleLeadSec(): number {
+    try {
+      const raw = Tone.getContext().rawContext as AudioContext;
+      const base = typeof raw.baseLatency === 'number' ? raw.baseLatency : 0;
+      const out = typeof raw.outputLatency === 'number' ? raw.outputLatency : 0;
+      const reported = base + out;
+      return Math.min(
+        MAX_SCHEDULE_LEAD_SEC,
+        Math.max(MIN_SCHEDULE_LEAD_SEC, reported + SCHEDULE_LEAD_PAD_SEC),
+      );
+    } catch {
+      return MIN_SCHEDULE_LEAD_SEC;
+    }
+  }
+
   /**
    * Synchronous reschedule from a timeline position (no await gap).
    * Returns false if there is no audible timeline left from `from`.
    */
   private scheduleTimeline(from: number): boolean {
     this.haltTransport();
+    for (const track of this.trackSlots.values()) {
+      track.chain.resetEffectTails();
+    }
 
     const transport = Tone.getTransport();
     const start = Math.max(0, from);
     let end = start;
     let scheduledAny = false;
+    const contextStart = Tone.now() + this.scheduleLeadSec();
 
     transport.stop();
-    transport.seconds = start;
+    transport.cancel(0);
     this.playFrom = start;
 
     for (const slot of this.clipSlots.values()) {
@@ -443,11 +564,15 @@ export class SessionEngine {
       const playAt = Math.max(start, clipStart);
       const offset = clip.trim.start + elapsed;
       const remaining = clipEnd - playAt;
+      if (remaining <= 1e-6) continue;
       const atClipStart = elapsed <= 1e-9;
 
+      slot.player.unsync();
+      slot.player.stop();
       slot.player.fadeIn = atClipStart ? fadeIn : SEEK_FADE_IN_SEC;
       slot.player.fadeOut = Math.min(fadeOut, remaining);
-      slot.player.sync().start(playAt, offset, remaining);
+      const when = contextStart + (playAt - start);
+      slot.player.start(when, offset, remaining);
       scheduledAny = true;
       end = Math.max(end, clipEnd);
     }
@@ -457,7 +582,7 @@ export class SessionEngine {
       return false;
     }
 
-    this.updateCompensation();
+    this.snapCompensation();
     this.refreshAutotuneSources();
     this.tickAutotune();
     this.autotuneEvent = transport.scheduleRepeat(() => {
@@ -467,7 +592,7 @@ export class SessionEngine {
       this.stop();
       this.onEnded();
     }, end + 0.05 + this.compensationSec);
-    transport.start();
+    transport.start(contextStart, start);
     this.transportActive = true;
     return true;
   }
@@ -509,14 +634,18 @@ export class SessionEngine {
     }
   }
 
-  async play(from: number): Promise<boolean> {
+  async play(from: number, readPosition?: () => number): Promise<boolean> {
     this.revision++;
     const revision = this.revision;
     await this.ensureAudioReady();
     if (revision !== this.revision) {
       return false;
     }
-    return this.scheduleTimeline(from);
+    const at = readPosition ? Math.max(0, readPosition()) : from;
+    if (revision !== this.revision) {
+      return false;
+    }
+    return this.scheduleTimeline(at);
   }
 
   private disposeClipSlot(slot: ClipSlot): void {

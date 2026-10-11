@@ -4,6 +4,7 @@ import {
   validateFeatures,
   validateCurrentPreset,
   validateCurrentTrackVolume,
+  validateCurrentTrackName,
   validateOtherTracks,
   validateHistory,
   generatePreset,
@@ -41,6 +42,7 @@ const server = createServer(async (req, res) => {
     let features;
     let currentPreset;
     let currentTrackVolumeDb;
+    let currentTrackName;
     let otherTracks;
     let history;
     try {
@@ -48,6 +50,7 @@ const server = createServer(async (req, res) => {
       features = validateFeatures(body.features);
       currentPreset = validateCurrentPreset(body);
       currentTrackVolumeDb = validateCurrentTrackVolume(body);
+      currentTrackName = validateCurrentTrackName(body);
       otherTracks = validateOtherTracks(body);
       history = validateHistory(body);
     } catch (error) {
@@ -59,6 +62,7 @@ const server = createServer(async (req, res) => {
       await generatePreset(prompt, features, {
         currentPreset,
         currentTrackVolumeDb,
+        currentTrackName,
         otherTracks,
         history,
       }),

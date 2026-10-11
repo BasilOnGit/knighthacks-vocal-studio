@@ -5,8 +5,11 @@ import type { SessionTrack, Snippet } from './snippets';
 import { emptyTrackPreset, newSessionTrack } from './snippets';
 import type { AiThreadState } from './aiThread';
 import { parseAiThreadState } from './aiThread';
+import {
+  bufferStorageKey,
+  sessionStorageKey,
+} from './studioProjects';
 
-const SESSION_KEY = 'vocal-studio.session.v1';
 const BUFFER_DB = 'vocal-studio-audio';
 const BUFFER_STORE = 'buffers';
 
@@ -70,19 +73,24 @@ async function putBuffer(id: string, buffer: AudioBuffer): Promise<void> {
   db.close();
 }
 
-async function getBuffer(id: string): Promise<AudioBuffer | null> {
+async function getBuffer(projectId: string, clipId: string): Promise<AudioBuffer | null> {
   const db = await openBufferDb();
-  const payload = await new Promise<{
+  const keys = [bufferStorageKey(projectId, clipId), clipId];
+  let payload: {
     sampleRate: number;
     length: number;
     numberOfChannels: number;
     channels: Float32Array[];
-  } | undefined>((resolve, reject) => {
-    const tx = db.transaction(BUFFER_STORE, 'readonly');
-    const req = tx.objectStore(BUFFER_STORE).get(id);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('get buffer failed'));
-  });
+  } | undefined;
+  for (const key of keys) {
+    payload = await new Promise((resolve, reject) => {
+      const tx = db.transaction(BUFFER_STORE, 'readonly');
+      const req = tx.objectStore(BUFFER_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error ?? new Error('get buffer failed'));
+    });
+    if (payload) break;
+  }
   db.close();
   if (!payload) return null;
   const ctx = new AudioContext();
@@ -117,13 +125,16 @@ export function clipToPersisted(clip: Snippet): PersistedClip {
   };
 }
 
-export async function persistStudioSession(data: {
-  tracks: SessionTrack[];
-  clips: Snippet[];
-  mixes: Record<string, Mix>;
-  trackSources: Record<string, string>;
-  aiThreads: AiThreadState;
-}): Promise<void> {
+export async function persistStudioSession(
+  projectId: string,
+  data: {
+    tracks: SessionTrack[];
+    clips: Snippet[];
+    mixes: Record<string, Mix>;
+    trackSources: Record<string, string>;
+    aiThreads: AiThreadState;
+  },
+): Promise<void> {
   const payload: PersistedSession = {
     tracks: data.tracks.map((t) => ({
       ...t,
@@ -134,18 +145,20 @@ export async function persistStudioSession(data: {
     trackSources: data.trackSources,
     aiThreads: data.aiThreads,
   };
-  localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
-  await Promise.all(data.clips.map((c) => putBuffer(c.id, c.buffer)));
+  localStorage.setItem(sessionStorageKey(projectId), JSON.stringify(payload));
+  await Promise.all(
+    data.clips.map((c) => putBuffer(bufferStorageKey(projectId, c.id), c.buffer)),
+  );
 }
 
-export async function loadStudioSession(): Promise<{
+export async function loadStudioSession(projectId: string): Promise<{
   tracks: SessionTrack[];
   clips: Snippet[];
   mixes: Record<string, Mix>;
   trackSources: Record<string, string>;
   aiThreads: AiThreadState;
 } | null> {
-  const raw = localStorage.getItem(SESSION_KEY);
+  const raw = localStorage.getItem(sessionStorageKey(projectId));
   if (!raw) return null;
   let parsed: PersistedSession;
   try {
@@ -163,7 +176,7 @@ export async function loadStudioSession(): Promise<{
 
   const clips: Snippet[] = [];
   for (const meta of parsed.clips ?? []) {
-    const buffer = await getBuffer(meta.id);
+    const buffer = await getBuffer(projectId, meta.id);
     if (!buffer) continue;
     clips.push({
       id: meta.id,
@@ -188,6 +201,35 @@ export async function loadStudioSession(): Promise<{
     trackSources: parsed.trackSources ?? {},
     aiThreads: parseAiThreadState(parsed.aiThreads),
   };
+}
+
+export async function eraseStudioProject(projectId: string): Promise<void> {
+  const raw = localStorage.getItem(sessionStorageKey(projectId));
+  const clipIds: string[] = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as PersistedSession;
+      for (const clip of parsed.clips ?? []) {
+        if (clip?.id) clipIds.push(clip.id);
+      }
+    } catch {
+      // drop corrupt session payload
+    }
+  }
+  localStorage.removeItem(sessionStorageKey(projectId));
+  if (!clipIds.length) return;
+  const db = await openBufferDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(BUFFER_STORE, 'readwrite');
+    const store = tx.objectStore(BUFFER_STORE);
+    for (const clipId of clipIds) {
+      store.delete(bufferStorageKey(projectId, clipId));
+      store.delete(clipId);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('erase buffers failed'));
+  });
+  db.close();
 }
 
 export function defaultStudioTracks(): SessionTrack[] {

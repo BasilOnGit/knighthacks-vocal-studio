@@ -12,15 +12,15 @@ export function FeatureList({
     <div>
       <dl className="features">
         <div>
-          <dt>Loudness</dt>
+          <dt>Avg. level</dt>
           <dd>{formatDb(features.loudnessDb)} dB</dd>
         </div>
         <div>
-          <dt>Peak</dt>
+          <dt>Peak level</dt>
           <dd>{formatDb(features.peakDb)} dB</dd>
         </div>
         <div>
-          <dt>Brightness</dt>
+          <dt>Tone center</dt>
           <dd>{formatHz(features.centroidHz)} Hz</dd>
         </div>
         <div>
@@ -32,20 +32,20 @@ export function FeatureList({
           <dd>{formatDb(features.noiseFloorDb)} dB</dd>
         </div>
         <div>
-          <dt>Voiced</dt>
-          <dd>{formatSeconds(features.voicedSeconds)}s</dd>
+          <dt>Voiced time</dt>
+          <dd>{formatSeconds(features.voicedSeconds)} s</dd>
         </div>
         <div>
           <dt>Key</dt>
           <dd>
             {features.keyConfidence > 0
-              ? `${pitchClassName(features.key)} ${features.scaleMajor >= 0.5 ? 'major' : 'minor'} (${formatPercent(features.keyConfidence)} conf.)`
+              ? `${pitchClassName(features.key)} ${features.scaleMajor >= 0.5 ? 'major' : 'minor'} (${formatPercent(features.keyConfidence)})`
               : '—'}
           </dd>
         </div>
         <div>
-          <dt>BPM</dt>
-          <dd>{features.bpm > 0 ? String(features.bpm) : '—'}</dd>
+          <dt>Tempo</dt>
+          <dd>{features.bpm > 0 ? `${features.bpm} BPM` : '—'}</dd>
         </div>
         <div>
           <dt>Pitch stability</dt>

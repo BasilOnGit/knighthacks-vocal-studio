@@ -82,12 +82,14 @@ export function EqSpectrumEditor({
   params,
   enabled,
   onParamChange,
+  onEditStart,
   getSpectrumDb,
   sampleRate,
 }: {
   params: Record<string, number>;
   enabled: boolean;
   onParamChange: (key: string, value: number) => void;
+  onEditStart?: () => void;
   getSpectrumDb?: () => Float32Array | null;
   sampleRate?: number;
 }) {
@@ -265,6 +267,7 @@ export function EqSpectrumEditor({
     if (!node) {
       return;
     }
+    onEditStart?.();
     dragRef.current = { id: node.id, pointerId: event.pointerId };
     setActiveId(node.id);
     event.currentTarget.setPointerCapture(event.pointerId);

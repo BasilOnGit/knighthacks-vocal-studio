@@ -6,9 +6,10 @@ import type { TrimRange } from '../../../../shared/types';
 type Props = {
  buffer: AudioBuffer; trim: TrimRange; timelineStartSec: number;
  onTrimChange: (trim: TrimRange) => void; onTimelineStartChange: (start: number) => void;
+ onGestureStart?: () => void;
 };
 type Drag = {pointerId: number; originX: number; start: number; trim: TrimRange; kind: 'move' | 'start' | 'end'};
-export function TrimWaveViewport({buffer,trim,timelineStartSec,onTrimChange,onTimelineStartChange}: Props) {
+export function TrimWaveViewport({buffer,trim,timelineStartSec,onTrimChange,onTimelineStartChange,onGestureStart}: Props) {
  const {secToPx,pxPerSec}=useTimelineScale();
  const canvasRef=React.useRef<HTMLCanvasElement>(null);
  const dragRef=React.useRef<Drag | null>(null);
@@ -41,6 +42,7 @@ export function TrimWaveViewport({buffer,trim,timelineStartSec,onTrimChange,onTi
    const handle=(event.target as HTMLElement).closest('[data-trim-edge]') as HTMLElement | null;
    const nextKind=(handle?.dataset.trimEdge as 'start'|'end'|undefined) ?? 'move';
    event.preventDefault();event.stopPropagation();event.currentTarget.setPointerCapture(event.pointerId);
+   onGestureStart?.();
    dragRef.current={pointerId:event.pointerId,originX:event.clientX,start:timelineStartSec,trim:{...trim},kind:nextKind};
    setKind(nextKind);
    if(nextKind!=='move'){setPreview(trim);previewRef.current=trim;}
@@ -66,9 +68,9 @@ export function TrimWaveViewport({buffer,trim,timelineStartSec,onTrimChange,onTi
    </div>
    {resizing&&<div className="trim-preview-selection" style={{left:secToPx(selected.start-trim.start),width:secToPx(selected.end-selected.start)}}/>}
    <button type="button" className="trim-edge trim-edge--start" data-trim-edge="start" aria-label="Trim clip start" style={{left:resizing?secToPx(selected.start-trim.start):0}}
-     onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();onTrimChange(resizedTrim(trim,'start',(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?1:.05),buffer.duration,timelineStartSec));}}}>⠿</button>
+     onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();onGestureStart?.();onTrimChange(resizedTrim(trim,'start',(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?1:.05),buffer.duration,timelineStartSec));}}}>⠿</button>
    <button type="button" className="trim-edge trim-edge--end" data-trim-edge="end" aria-label="Trim clip end" style={{right:resizing?-secToPx(selected.end-trim.end):0}}
-     onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();onTrimChange(resizedTrim(trim,'end',(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?1:.05),buffer.duration,timelineStartSec));}}}>⠿</button>
+     onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();onGestureStart?.();onTrimChange(resizedTrim(trim,'end',(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?1:.05),buffer.duration,timelineStartSec));}}}>⠿</button>
    {resizing&&<span className="trim-preview-label">{selected.start.toFixed(2)}–{selected.end.toFixed(2)}s · {(selected.end-selected.start).toFixed(2)}s</span>}
  </div>;
 }

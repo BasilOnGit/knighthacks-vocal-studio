@@ -233,6 +233,59 @@ function drillSeed(): Preset {
   ]);
 }
 
+function backgroundVocalSeed(): Preset {
+  return buildPreset(
+    'bg-vocal',
+    'Background vocal',
+    'Harmony stack behind the lead with wetter space than a lead vocal.',
+    [
+      { slot: 'eq', type: 'eq', params: { lowCutHz: 100, bodyDb: -2, airDb: 1.5 }, why: 'Sit behind the lead' },
+      {
+        slot: 'comp',
+        type: 'compressor',
+        params: { thresholdDb: -22, ratio: 3.5, attackMs: 12, mix: 100 },
+        why: 'Glue the stack',
+      },
+      { slot: 'deess', type: 'deesser', params: { mix: 58, freqHz: 12000 }, why: 'Smooth stack brightness' },
+      { slot: 'dbl', type: 'doubler', params: { mix: 24, delayMs: 18, width: 75 }, why: 'Stereo width' },
+      {
+        slot: 'delay',
+        type: 'delay',
+        params: { timeMs: 400, feedback: 18, mix: 30, pingPong: 1 },
+        why: 'Depth behind lead',
+      },
+      { slot: 'verb', type: 'reverb', params: { mix: 52, sizePct: 50, tonePct: 32 }, why: 'Wet hall for BG layer' },
+    ],
+    -6,
+  );
+}
+
+function adlibVocalSeed(): Preset {
+  return buildPreset(
+    'adlib',
+    'Adlib / ear candy',
+    'Floating adlibs with obvious delay and long reverb tail.',
+    [
+      { slot: 'eq', type: 'eq', params: { lowCutHz: 110, bodyDb: -2.5, airDb: 2 }, why: 'Light and behind lead' },
+      {
+        slot: 'comp',
+        type: 'compressor',
+        params: { thresholdDb: -23, ratio: 3, attackMs: 14, mix: 100 },
+        why: 'Controlled level',
+      },
+      { slot: 'deess', type: 'deesser', params: { mix: 55, freqHz: 12000 }, why: 'Smooth top in space' },
+      {
+        slot: 'delay',
+        type: 'delay',
+        params: { timeMs: 420, feedback: 22, mix: 35, pingPong: 1 },
+        why: 'Obvious echo on fills',
+      },
+      { slot: 'verb', type: 'reverb', params: { mix: 62, sizePct: 58, tonePct: 34 }, why: 'Long wet tail for adlibs' },
+    ],
+    -8,
+  );
+}
+
 function dreamPopSeed(): Preset {
   return buildPreset('dream-pop', 'Dream pop', 'Airy vocal with width, ping-pong delay, and lush reverb.', [
     { slot: 'eq', type: 'eq', params: { lowCutHz: 90, airDb: 3, bodyDb: -2 }, why: 'Airy top, soft mids' },
@@ -539,6 +592,19 @@ export const SEED_SPECS: SeedSpec[] = [
     match:
       /\b(podcast|spoken|spoken word|voiceover|voice-over|narration|audiobook|interview|broadcast|talk show)\b|\b(bone-?dry|no reverb|without reverb|\bdry\b)\b/,
     build: podcastSeed,
+  },
+  {
+    id: 'adlib',
+    notes: 'Adlibs / fills — wet delay and long verb behind the lead.',
+    match: /\b(adlib|ad-?libs?|ad lib|vocal fills?|oohs? and ahhs?|call and response)\b/i,
+    build: adlibVocalSeed,
+  },
+  {
+    id: 'bg-vocal',
+    notes: 'Background / harmony stack — wetter than lead, lower fader.',
+    match:
+      /\b(background vocal|backing vocal|bg vocal|harmonies?|harmony stack|stacked vocal|bgv|bv layer)\b/i,
+    build: backgroundVocalSeed,
   },
   {
     id: 'telephone',

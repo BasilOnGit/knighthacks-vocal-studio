@@ -81,9 +81,12 @@ export function restoreDeletedClip(clips: Snippet[], snippet: Snippet): Snippet[
   return [...clips, snippet];
 }
 
-export function ignoresDeleteShortcut(target: EventTarget | null): boolean {
+export function ignoresGlobalShortcuts(target: EventTarget | null): boolean {
   const node = target as HTMLElement | null;
   return !!node?.closest?.(
     'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]',
   );
 }
+
+/** @deprecated Use ignoresGlobalShortcuts */
+export const ignoresDeleteShortcut = ignoresGlobalShortcuts;

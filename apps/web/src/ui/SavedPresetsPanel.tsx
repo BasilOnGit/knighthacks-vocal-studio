@@ -1,5 +1,14 @@
 import React from 'react';
 import type { SavedPreset } from '../session/savedPresets';
+import {
+  Bookmark,
+  BookmarkPlus,
+  Check,
+  ICON_SIZE,
+  ICON_STROKE,
+  Trash2,
+} from './icons';
+import { InspectorSection } from './InspectorSection';
 
 export function SavedPresetsPanel({
   disabled,
@@ -23,11 +32,10 @@ export function SavedPresetsPanel({
   }, [currentPresetName]);
 
   return (
-    <section className="saved-presets" aria-label="Saved presets">
-      <h3 className="section-title">Saved presets</h3>
-      <p className="input-help">Stored in this browser tab for the session. Backend sync coming later.</p>
-      <div className="saved-presets-save">
-        <label>
+    <InspectorSection title="Saved presets" icon={Bookmark} className="saved-presets">
+      <p className="input-help saved-presets-note">Saved on this device</p>
+      <div className="saved-presets-save card">
+        <label className="saved-presets-name">
           Name
           <input
             type="text"
@@ -41,18 +49,22 @@ export function SavedPresetsPanel({
         </label>
         <button
           type="button"
+          className="btn-primary saved-presets-save-btn"
           disabled={disabled}
+          aria-label="Save current chain"
+          title="Save"
           onClick={() => onSave(name.trim() || currentPresetName || 'Saved preset')}
         >
-          Save current chain
+          <BookmarkPlus size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+          Save
         </button>
       </div>
       {savedPresets.length === 0 ? (
-        <p className="saved-presets-empty">No saved presets yet.</p>
+        <p className="inspector-empty">No saved presets yet.</p>
       ) : (
         <ul className="saved-presets-list">
           {savedPresets.map((entry) => (
-            <li key={entry.id}>
+            <li key={entry.id} className="card saved-presets-card">
               <div className="saved-presets-meta">
                 <strong>{entry.name}</strong>
                 <span>
@@ -60,23 +72,31 @@ export function SavedPresetsPanel({
                 </span>
               </div>
               <div className="saved-presets-actions">
-                <button type="button" disabled={disabled} onClick={() => onApply(entry.id)}>
-                  Apply
+                <button
+                  type="button"
+                  className="btn-icon"
+                  disabled={disabled}
+                  aria-label={`Apply ${entry.name}`}
+                  title="Apply"
+                  onClick={() => onApply(entry.id)}
+                >
+                  <Check size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
                 </button>
                 <button
                   type="button"
-                  className="saved-presets-remove"
+                  className="btn-icon btn-icon--danger saved-presets-remove"
                   disabled={disabled}
                   aria-label={`Remove ${entry.name}`}
+                  title="Remove"
                   onClick={() => onRemove(entry.id)}
                 >
-                  Remove
+                  <Trash2 size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
                 </button>
               </div>
             </li>
           ))}
         </ul>
       )}
-    </section>
+    </InspectorSection>
   );
 }

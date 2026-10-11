@@ -1,5 +1,7 @@
 import React from 'react';
 import { InputMonitor } from '../engine/monitor';
+import { Headphones, ICON_SIZE, ICON_STROKE, Mic, Wand2 } from './icons';
+import { ToggleButton } from './ToggleButton';
 
 export function InputPanel({
   deviceId,
@@ -21,6 +23,7 @@ export function InputPanel({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState('');
   const [level, setLevel] = React.useState(-60);
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
 
   React.useEffect(() => {
     const refresh = () => {
@@ -93,25 +96,42 @@ export function InputPanel({
     }
   }
 
+  async function onDeviceSelect(nextId: string) {
+    onDeviceChange(nextId);
+    if (!active) {
+      return;
+    }
+    const keepMonitor = monitoring;
+    const keepAutotune = autotunePreview;
+    setBusy(true);
+    setError('');
+    try {
+      const autotune =
+        keepAutotune && monitorAutotune ? { params: monitorAutotune } : null;
+      await monitor.current!.start(nextId, keepMonitor, autotune);
+    } catch {
+      monitor.current?.stop();
+      setActive(false);
+      setMonitoring(false);
+      setAutotunePreview(false);
+      setError('Microphone unavailable. Check your browser permission and input device.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="input-panel" aria-label="Microphone setup">
-      <div>
-        <span className="eyebrow">INPUT & MONITORING</span>
-        <h2>Sound check</h2>
-      </div>
-      <label>
-        Microphone
+      <label className="input-panel-mic">
+        <span className="input-panel-mic-label">
+          <Mic size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+          Mic
+        </span>
         <select
           aria-label="Microphone"
           value={deviceId}
           disabled={recording || busy}
-          onChange={(e) => {
-            monitor.current?.stop();
-            setActive(false);
-            setMonitoring(false);
-            setAutotunePreview(false);
-            onDeviceChange(e.target.value);
-          }}
+          onChange={(e) => void onDeviceSelect(e.target.value)}
         >
           <option value="">System default</option>
           {devices.map((d, i) => (
@@ -122,11 +142,11 @@ export function InputPanel({
         </select>
       </label>
       <button type="button" disabled={busy} onClick={() => void toggleInput()}>
-        {busy ? 'Connecting…' : active ? 'Disconnect input' : 'Check microphone'}
+        {busy ? 'Connecting…' : active ? 'Disconnect' : 'Check mic'}
       </button>
       <div className="input-meter">
         <span>
-          Input level <strong>{active ? `${Math.round(level)} dB` : 'Offline'}</strong>
+          Level <strong>{active ? `${Math.round(level)} dB` : '—'}</strong>
         </span>
         <meter
           min={-60}
@@ -137,44 +157,47 @@ export function InputPanel({
           value={level}
           aria-label="Microphone input level"
         />
-        <small>
-          {active
-            ? level > -6
-              ? 'Strong signal — lower your input gain'
-              : level < -40
-                ? 'Try speaking closer to the mic'
-                : 'Signal looks good'
-            : 'Connect to check your microphone'}
-        </small>
       </div>
-      <label className="monitor-switch">
-        <input
-          type="checkbox"
-          checked={monitoring}
+      <div className="toggle-btn-group input-monitor-toggles">
+        <ToggleButton
+          pressed={monitoring}
+          variant="monitor"
           disabled={!active}
-          onChange={(e) => void onMonitoringChange(e.target.checked)}
-        />
-        Hear myself
-      </label>
-      {monitorAutotune ? (
-        <label className="monitor-switch">
-          <input
-            type="checkbox"
-            checked={autotunePreview}
+          size="sm"
+          title="Hear your mic through headphones"
+          onToggle={() => void onMonitoringChange(!monitoring)}
+        >
+          <Headphones size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+          Monitor
+        </ToggleButton>
+        {monitorAutotune ? (
+          <ToggleButton
+            pressed={autotunePreview}
             disabled={!active || !monitoring}
-            onChange={(e) => {
-              const on = e.target.checked;
+            size="sm"
+            title="Preview autotune from the focused track"
+            onToggle={() => {
+              const on = !autotunePreview;
               setAutotunePreview(on);
               void monitor.current?.setAutotunePreview(on, monitorAutotune);
             }}
-          />
-          Autotune preview
-        </label>
-      ) : null}
-      <p className="input-help">
-        Use headphones before enabling monitoring. Autotune preview uses the selected clip&apos;s
-        autotune settings; recordings stay dry.
-      </p>
+          >
+            <Wand2 size={ICON_SIZE} strokeWidth={ICON_STROKE} aria-hidden />
+            Autotune
+          </ToggleButton>
+        ) : null}
+      </div>
+      <details
+        className="input-monitor-details"
+        open={detailsOpen}
+        onToggle={(e) => setDetailsOpen((e.target as HTMLDetailsElement).open)}
+      >
+        <summary>Monitoring tips</summary>
+        <p className="input-help">
+          Use headphones before monitoring. Autotune preview follows the focused track;
+          recordings stay dry.
+        </p>
+      </details>
       {error && <p role="alert" className="form-error">{error}</p>}
     </section>
   );

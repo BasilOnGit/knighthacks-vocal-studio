@@ -106,6 +106,7 @@ function setup() {
   const transport = {
     seconds: 0,
     stop() {},
+    cancel() {},
     start() {
       this.started = true;
     },
@@ -129,6 +130,7 @@ function setup() {
     getTransport: () => transport,
     now: () => 0,
     start: async () => {},
+    getContext: () => ({ rawContext: { baseLatency: 0, outputLatency: 0 } }),
   };
   const preload = async () => {};
   const Engine = new Function(
@@ -153,8 +155,8 @@ test('all overlapping snippets schedule concurrently, including trimmed source o
   b.clipStartSec = -1;
   engine.sync([a, b], emptyPresets);
   assert.equal(await engine.play(0), true);
-  assert.deepEqual(players[0].scheduled, { at: 0, offset: 0, duration: 5 });
-  assert.deepEqual(players[1].scheduled, { at: 1, offset: 2, duration: 3 });
+  assert.deepEqual(players[0].scheduled, { at: 0.05, offset: 0, duration: 5 });
+  assert.deepEqual(players[1].scheduled, { at: 1.05, offset: 2, duration: 3 });
 });
 
 test('seeking to a gap before a clip still plays the upcoming clip', async () => {
@@ -164,7 +166,7 @@ test('seeking to a gap before a clip still plays the upcoming clip', async () =>
   // Playhead in the empty region before the clip: playback must still start.
   assert.equal(await engine.play(1), true);
   assert.equal(transport.started, true);
-  assert.deepEqual(players[0].scheduled, { at: 3, offset: 0, duration: 5 });
+  assert.deepEqual(players[0].scheduled, { at: 2.05, offset: 0, duration: 5 });
   // Playhead past all audio: nothing to play.
   assert.equal(await engine.play(9), false);
 });
@@ -176,7 +178,7 @@ test('clips entirely behind the playhead are not scheduled', async () => {
   engine.sync([early, cover], emptyPresets);
   assert.equal(await engine.play(5), true);
   assert.equal(players[0].scheduled, undefined);
-  assert.deepEqual(players[1].scheduled, { at: 5, offset: 1, duration: 4 });
+  assert.deepEqual(players[1].scheduled, { at: 0.05, offset: 1, duration: 4 });
 });
 
 test('clips on the same track share one effect chain', () => {
@@ -225,6 +227,20 @@ test('clip volume, pan, track mute and solo use separate audio nodes', () => {
   assert.equal(engine.trackSlots.get('beat').trackGain.gain.value, 0);
 });
 
+test('play uses the latest timeline position after worklet warmup', async () => {
+  const { engine, players, tone } = setup();
+  engine.sync([newSnippet(buffer, 'A', 'vocal', 0, 'a')], emptyPresets);
+  let resolve;
+  tone.start = () =>
+    new Promise((r) => {
+      resolve = r;
+    });
+  const pending = engine.play(0, () => 2);
+  resolve();
+  assert.equal(await pending, true);
+  assert.deepEqual(players[0].scheduled, { at: 0.05, offset: 2, duration: 3 });
+});
+
 test('stopping during audio-context startup cancels playback', async () => {
   const { engine, tone, transport } = setup();
   engine.sync([newSnippet(buffer, 'A', 'vocal', 0, 'a')], emptyPresets);
@@ -268,7 +284,7 @@ test('seekTo reschedules synchronously after worklets are warm', async () => {
   engine.sync([newSnippet(buffer, 'A', 'vocal', 0, 'a')], emptyPresets);
   assert.equal(await engine.play(0), true);
   assert.equal(engine.seekTo(2), true);
-  assert.deepEqual(players[0].scheduled, { at: 2, offset: 2, duration: 3 });
+  assert.deepEqual(players[0].scheduled, { at: 0.05, offset: 2, duration: 3 });
   assert.equal(transport.started, true);
   transport.seconds = 2.2;
   assert.ok(Math.abs(engine.getSeconds() - 2.2) < 1e-9);

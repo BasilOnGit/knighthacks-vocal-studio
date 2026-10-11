@@ -5,6 +5,7 @@ import { stampPresetFromFeatures } from '../../../shared/stampPreset.ts';
 import { MAX_OTHER_TRACKS_FOR_MODEL } from '../../../shared/otherTracks.ts';
 import { clampTrackVolumeDb, withResolvedTrackVolume } from '../../../shared/trackVolume.ts';
 import { validatePreset } from '../../../shared/validate.ts';
+import { REVERB_GUIDANCE_FOR_MODEL, vocalLayerHintsForModel } from '../../../shared/vocalLayer.ts';
 
 const FEATURE_KEYS = [
   'loudnessDb',
@@ -71,7 +72,7 @@ delay — timeMs, feedback and mix as 0–100 % (BandLab D-Delay): feedback 10�
 denoise — place first when used; amount 35–55 clean-up, 55–80 noisy room; omit on pristine studio takes
 rider — after compressor for smooth level; targetDb -20 to -16; speed 0.25–0.5; maxGainDb 4–8; omit for aggressive punch chains
 doubler — mix 12–30 subtle width, 30–45 obvious stack; delayMs 12–22; width 60–90; before delay/reverb when widening
-reverb — mix/size/tone are 0–100 (BandLab Studio Reverb): mix 8–18 intimate, 25–45 spacious; size 10–25 small room, 40–80 hall; tone 10–25 dark, 40–60 bright
+${REVERB_GUIDANCE_FOR_MODEL}
 eq — start near 0 dB. Do not stack presenceDb and airDb; for clean treble use a little airDb (1–3) and leave presenceDb at 0 or a cut. High-pass only unless the prompt asks for tone.
 
 ${MIXING_GUIDE}
@@ -250,6 +251,20 @@ export function validateCurrentTrackVolume(body) {
   return clampTrackVolumeDb(value);
 }
 
+export function validateCurrentTrackName(body) {
+  if (body?.currentTrackName == null) {
+    return undefined;
+  }
+  if (typeof body.currentTrackName !== 'string') {
+    throw new Error('currentTrackName must be a string.');
+  }
+  const trimmed = body.currentTrackName.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.slice(0, 80);
+}
+
 function userMessage(
   prompt,
   features,
@@ -258,6 +273,7 @@ function userMessage(
   history,
   currentTrackVolumeDb,
   otherTracks,
+  currentTrackName,
 ) {
   const lines = [
     `Prompt: ${prompt}`,
@@ -265,6 +281,9 @@ function userMessage(
     'Do not guess key — set autotune key/scaleMajor from features.key and features.scaleMajor (beat key when features.bpm > 0).',
     'Build a custom chain: choose effects and their order for this prompt and voice. Do not output a generic chain unless the prompt is generic.',
   ];
+  for (const hint of vocalLayerHintsForModel(prompt, currentTrackName)) {
+    lines.push(hint);
+  }
   if (currentTrackVolumeDb !== undefined) {
     lines.push(
       `Current track fader: ${currentTrackVolumeDb} dB (allowed −36 to +6). Set trackVolumeDb when the vibe needs a different level.`,
@@ -314,6 +333,7 @@ async function requestPreset(
   history,
   currentTrackVolumeDb,
   otherTracks,
+  currentTrackName,
 ) {
   const response = await fetchImpl(HF_CHAT_URL, {
     method: 'POST',
@@ -335,6 +355,7 @@ async function requestPreset(
             history,
             currentTrackVolumeDb,
             otherTracks,
+            currentTrackName,
           ),
         },
       ],
@@ -371,6 +392,7 @@ export async function generatePreset(prompt, features, options = {}) {
     : undefined;
   const currentTrackVolumeDb = options.currentTrackVolumeDb;
   const otherTracks = options.otherTracks ?? [];
+  const currentTrackName = options.currentTrackName;
   if (!token || !model) {
     const seed = validatePreset(matchSeed(prompt));
     return {
@@ -393,6 +415,7 @@ export async function generatePreset(prompt, features, options = {}) {
         history,
         currentTrackVolumeDb,
         otherTracks,
+        currentTrackName,
       );
       return { preset, source: 'model' };
     } catch (error) {

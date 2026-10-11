@@ -7,6 +7,7 @@ import {
   ensureMixProtocol,
   promptRejectsSpace,
   validateCurrentTrackVolume,
+  validateCurrentTrackName,
   validateOtherTracks,
 } from '../src/preset.js';
 import { fakeFeatures } from '../../../shared/fakePreset.ts';
@@ -99,6 +100,31 @@ test('validateCurrentTrackVolume clamps and rejects bad values', () => {
   assert.equal(validateCurrentTrackVolume({ currentTrackVolumeDb: 3 }), 3);
   assert.equal(validateCurrentTrackVolume({ currentTrackVolumeDb: 99 }), 6);
   assert.throws(() => validateCurrentTrackVolume({ currentTrackVolumeDb: 'loud' }));
+});
+
+test('validateCurrentTrackName trims and caps length', () => {
+  assert.equal(validateCurrentTrackName({}), undefined);
+  assert.equal(validateCurrentTrackName({ currentTrackName: '  Adlibs  ' }), 'Adlibs');
+  assert.throws(() => validateCurrentTrackName({ currentTrackName: 12 }));
+});
+
+test('generatePreset adds layer reverb hints for background track names', async () => {
+  let userContent = '';
+  await generatePreset('soft stack', fakeFeatures, {
+    ...modelOptions(async (_url, init) => {
+      userContent = JSON.parse(init.body).messages[1].content;
+      return jsonResponse(
+        JSON.stringify({
+          name: 'BG',
+          explanation: 'Harmony',
+          chain: [{ type: 'eq', params: { lowCutHz: 95 }, why: 'HPF' }],
+        }),
+      );
+    }),
+    currentTrackName: 'Background vocals',
+  });
+  assert.match(userContent, /Layer role: background/i);
+  assert.match(userContent, /Current track name: Background vocals/);
 });
 
 test('generatePreset includes other tracks in the user message', async () => {

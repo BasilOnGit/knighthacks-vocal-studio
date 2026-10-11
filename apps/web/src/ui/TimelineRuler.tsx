@@ -35,7 +35,7 @@ export function TimelineRuler({ durationSec, seekDisabled = false, onJump }: Tim
         {ticks.map((t) => (
           <span
             key={t}
-            className="timeline-ruler-tick"
+            className={`timeline-ruler-tick${t === 0 ? ' timeline-ruler-tick--origin' : ''}`}
             style={{ left: secToPx(t) }}
           >
             {formatRulerLabel(t)}

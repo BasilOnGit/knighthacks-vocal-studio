@@ -137,13 +137,13 @@ function bandEnergies(
 export function featureWarnings(features: VoiceFeatures): string[] {
   const warnings: string[] = [];
   if (features.voicedSeconds < 3) {
-    warnings.push('Very short, results will be generic');
+    warnings.push('Very short clip — measurements may be less reliable.');
   }
   if (features.peakDb > -1) {
-    warnings.push('Clipping, re-record further from the mic');
+    warnings.push('Peaks are near clipping — lower input gain or step back from the mic.');
   }
   if (features.loudnessDb < -40) {
-    warnings.push('Too quiet');
+    warnings.push('Level is very low — raise gain or move closer to the mic.');
   }
   return warnings;
 }

@@ -1,4 +1,5 @@
 import * as Tone from 'tone';
+import type { SessionEngine } from '../engine/SessionEngine';
 
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -9,23 +10,49 @@ function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-/** Record the live master bus while the session plays from the start. */
+function extensionForMime(mime: string): string {
+  if (mime.includes('webm')) {
+    return 'webm';
+  }
+  if (mime.includes('ogg')) {
+    return 'ogg';
+  }
+  if (mime.includes('mp4') || mime.includes('m4a')) {
+    return 'm4a';
+  }
+  if (mime.includes('wav')) {
+    return 'wav';
+  }
+  return 'audio';
+}
+
+/** Record the session master bus while the timeline plays from the start. */
 export async function exportTimelineWav(
+  engine: SessionEngine,
   playTimeline: () => Promise<boolean>,
-  durationSec: number,
-  compensationSec: number,
 ): Promise<void> {
+  if (!Tone.Recorder.supported) {
+    throw new Error('Export is not supported in this browser.');
+  }
   await Tone.start();
   const recorder = new Tone.Recorder();
-  Tone.getDestination().connect(recorder);
-  const started = await playTimeline();
-  if (!started) {
+  engine.connectExportTap(recorder);
+  try {
+    await recorder.start();
+    const started = await playTimeline();
+    if (!started) {
+      if (recorder.state !== 'stopped') {
+        await recorder.stop();
+      }
+      throw new Error('Nothing to export — add clips and try again.');
+    }
+    await engine.waitForPlaybackEnd();
+    await new Promise((resolve) => setTimeout(resolve, engine.getPostExportPadSec() * 1000));
+    const blob = await recorder.stop();
+    const ext = extensionForMime(blob.type || recorder.mimeType);
+    downloadBlob(blob, `vocal-studio-mix-${Date.now()}.${ext}`);
+  } finally {
+    engine.disconnectExportTap(recorder);
     recorder.dispose();
-    throw new Error('Nothing to export — add clips and try again.');
   }
-  const waitMs = (durationSec + compensationSec + 0.25) * 1000;
-  await new Promise((resolve) => setTimeout(resolve, waitMs));
-  const blob = await recorder.stop();
-  recorder.dispose();
-  downloadBlob(blob, `vocal-studio-mix-${Date.now()}.wav`);
 }

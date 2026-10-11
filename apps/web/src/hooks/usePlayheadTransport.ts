@@ -93,7 +93,9 @@ export function usePlayheadTransport({
       }
 
       try {
-        const started = await engineRef.current?.play(at);
+        const started = await engineRef.current?.play(at, () =>
+          clamp(positionRef.current),
+        );
         if (requestId !== playRequestRef.current) {
           return false;
         }
@@ -128,10 +130,10 @@ export function usePlayheadTransport({
       const requestId = ++playRequestRef.current;
       wantsTransportRef.current = true;
       if (!trySyncSeek(at, requestId)) {
-        void startEngineAt(at);
+        void startEngineAt(clamp(positionRef.current));
       }
     },
-    [applyPosition, clamp, startEngineAt, trySyncSeek],
+    [applyPosition, clamp, positionRef, startEngineAt, trySyncSeek],
   );
 
   const seek = React.useCallback(
@@ -144,8 +146,8 @@ export function usePlayheadTransport({
         if (!scrubbingRef.current) {
           scrubbingRef.current = true;
           resumePlaybackAfterScrubRef.current = shouldKeepTransport();
+          interruptEngine();
           if (resumePlaybackAfterScrubRef.current) {
-            interruptEngine();
             setPlaying(false);
           }
         }
@@ -181,12 +183,15 @@ export function usePlayheadTransport({
       const restart = shouldKeepTransport() && !scrubbingRef.current;
       scrubbingRef.current = false;
       resumePlaybackAfterScrubRef.current = false;
+      if (!restart) {
+        interruptEngine();
+      }
       applyPosition(next);
       if (restart) {
         resumeAt(next);
       }
     },
-    [applyPosition, clamp, resumeAt, shouldKeepTransport, transportLocked],
+    [applyPosition, clamp, interruptEngine, resumeAt, shouldKeepTransport, transportLocked],
   );
 
   const stopPlayback = React.useCallback(

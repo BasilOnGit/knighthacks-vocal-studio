@@ -27,7 +27,7 @@ saturation — warmth, grit, lo-fi, tape, edge; omit for clean/polished vocals; 
 chorus — wide, lush, 80s, dreamy, modulated thickness; skip for dry intimate rap or podcast tone.
 doubler — subtle width/thickness, "double tracked", stacked vocal, Haas width without obvious chorus; lighter than chorus. Skip for mono/dry podcast.
 delay — slap, echo, spacious, rhythmic; keep mix low on lead vocals unless prompt emphasizes it. Set pingPong to 1 for stereo bounce (dream pop, EDM, wide mixes); 0 for mono slap (rap, intimate).
-reverb — space and depth; skip only when user wants dry/bone-dry/no reverb. Short decay for intimate, long for anthem/dreamy.`;
+reverb — space and depth; skip only when user wants dry/bone-dry/no reverb. Lead vocals: short room to medium hall. Background/harmony/adlib layers are usually wetter than the lead — higher mix and longer size are normal, not a mistake. When the user asks for lush, drowned, ambient, or more reverb, use high catalog values (mix/size up to 100).`;
 
 export const EFFECT_MIX_RULES = `EFFECT MIX (avoid stacked / double vocals):
 autotune — mix is dry+wet parallel. NEVER use partial mix (no 30–70%). Use mix 100 whenever tuning is audible, or omit autotune / mix 0. Soften tuning with lower retuneSpeed (0.35–0.8) and snap (0.65–0.9), not mix.
@@ -41,8 +41,9 @@ export const PROMPT_INTERPRETATION = `INTERPRET THE USER PROMPT (do this before 
 3. Choose effects that produce those traits — not every effect on every preset.
 4. Order the chain so each step makes sense for that story (document briefly in each why).
 5. Set trackVolumeDb (−36 to +6 dB) when the prompt implies level: whisper/intimate/dreamy lower (−2 to −5), upfront/rap/anthem higher (+1 to +4), podcast/spoken near 0; nudge down if loudnessDb is hot, up if the take is quiet.
-6. When other session tracks are provided, treat them as already mixed: match their role (e.g. second background vocal ≈ same space/level as the first BG), sit new layers relative to them (quieter/louder fader, similar reverb/delay if stacked harmonies), and do not fight the beat track.
-7. Use voice features to tune parameters (not to copy a fixed chain):
+6. When other session tracks are provided, treat them as already mixed: match their role (e.g. second background vocal ≈ same or wetter space/level as the first BG — copy reverb mix/size from their chain when stacking). Sit new layers relative to them (quieter fader for BG/adlibs, similar or higher reverb/delay when harmonies should melt together). Do not fight the beat track.
+7. Background, harmony, adlib, and ear-candy tracks: bias toward higher reverb/delay mix than the lead unless the prompt says dry/upfront. User requests for "more reverb" or wet space override conservative defaults — use the full parameter ranges.
+8. Use voice features to tune parameters (not to copy a fixed chain):
    - High centroidHz → no presence boost, little or no airDb, deesser around 10–14 kHz
    - Low loudnessDb → gentler compressor threshold, makeupDb only 1–3
    - High noiseFloorDb → denoise (early), gate if gaps between phrases, cautious HF boosts, skip saturation
