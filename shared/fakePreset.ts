@@ -8,6 +8,13 @@ export const fakeFeatures: VoiceFeatures = {
   pitchHz: 180,
   noiseFloorDb: -48,
   voicedSeconds: 6.2,
+  key: 0,
+  scaleMajor: 1,
+  keyConfidence: 0.85,
+  pitchStability: 0.72,
+  crestDb: 15,
+  sibilanceRatio: 0.28,
+  bpm: 120,
 };
 
 export const fakePreset: Preset = {
@@ -36,20 +43,20 @@ export const fakePreset: Preset = {
       params: fillParams('compressor', {
         thresholdDb: -18,
         ratio: 3.2,
-        attackMs: 5,
+        attackMs: 10,
         releaseMs: 100,
-        makeupDb: 3.5,
-        kneeDb: 10,
-        mix: 0.85,
+        makeupDb: 0,
+        kneeDb: 12,
+        mix: 100,
       }),
-      why: 'Soft knee with parallel blend for an even, close vocal',
+      why: 'Soft knee Digi Comp–style leveling',
     },
     {
       id: 'reverb-1',
       type: 'reverb',
       enabled: true,
-      params: fillParams('reverb', { mix: 0.1, decaySec: 0.75, preDelayMs: 32 }),
-      why: 'Short, filtered room — stays behind the vocal',
+      params: fillParams('reverb', { mix: 12, sizePct: 17, tonePct: 18 }),
+      why: 'Small dark room like BandLab Studio Reverb',
     },
   ],
 };

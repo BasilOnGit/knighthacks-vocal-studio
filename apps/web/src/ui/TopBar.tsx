@@ -10,13 +10,18 @@ type TopBarProps = {
   playing: boolean;
   recording: boolean;
   canPlay: boolean;
+  canExport: boolean;
+  exporting?: boolean;
   positionSec: number;
   dry: boolean;
+  loop: boolean;
   masterDb: number;
   onPlay: () => void;
   onRecord: () => void;
   onStop: () => void;
   onDryChange: (dry: boolean) => void;
+  onLoopChange: (loop: boolean) => void;
+  onExport: () => void;
   onMasterDbChange: (db: number) => void;
 };
 
@@ -25,13 +30,18 @@ export function TopBar({
   playing,
   recording,
   canPlay,
+  canExport,
+  exporting = false,
   positionSec,
   dry,
+  loop,
   masterDb,
   onPlay,
   onRecord,
   onStop,
   onDryChange,
+  onLoopChange,
+  onExport,
   onMasterDbChange,
 }: TopBarProps) {
   return (
@@ -70,14 +80,30 @@ export function TopBar({
             Stop
           </button>
         </div>
-        <label className="transport-toggle">
+        <label className="transport-toggle" title="Bypass all track effect chains (clips stay level/pan only)">
           <input
             type="checkbox"
             checked={dry}
             onChange={(e) => onDryChange(e.target.checked)}
           />
-          Dry
+          Bypass FX
         </label>
+        <label className="transport-toggle">
+          <input
+            type="checkbox"
+            checked={loop}
+            onChange={(e) => onLoopChange(e.target.checked)}
+          />
+          Loop
+        </label>
+        <button
+          type="button"
+          className="transport-btn transport-btn--export"
+          disabled={!canExport || exporting || recording || pending}
+          onClick={onExport}
+        >
+          {exporting ? 'Exporting…' : 'Export mix'}
+        </button>
       </div>
       <label className="transport-master">
         <span className="transport-master-label">Master</span>

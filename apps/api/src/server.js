@@ -1,5 +1,12 @@
 import { createServer } from 'node:http';
-import { validatePrompt, validateFeatures, generatePreset } from './preset.js';
+import {
+  validatePrompt,
+  validateFeatures,
+  validateCurrentPreset,
+  validateCurrentTrackVolume,
+  validateHistory,
+  generatePreset,
+} from './preset.js';
 
 function send(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -31,13 +38,23 @@ const server = createServer(async (req, res) => {
     }
     let prompt;
     let features;
+    let currentPreset;
+    let currentTrackVolumeDb;
+    let history;
     try {
       prompt = validatePrompt(body);
       features = validateFeatures(body.features);
+      currentPreset = validateCurrentPreset(body);
+      currentTrackVolumeDb = validateCurrentTrackVolume(body);
+      history = validateHistory(body);
     } catch (error) {
       return send(res, 400, { error: error.message });
     }
-    send(res, 200, await generatePreset(prompt, features));
+    send(
+      res,
+      200,
+      await generatePreset(prompt, features, { currentPreset, currentTrackVolumeDb, history }),
+    );
   } catch (error) {
     send(res, error.status || 500, { error: error.status ? error.message : 'Unable to generate preset' });
   }

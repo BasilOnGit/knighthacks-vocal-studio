@@ -1,11 +1,14 @@
 export type EffectType =
   | 'gate'
+  | 'denoise'
   | 'autotune'
   | 'eq'
   | 'compressor'
+  | 'rider'
   | 'deesser'
   | 'saturation'
   | 'chorus'
+  | 'doubler'
   | 'delay'
   | 'reverb';
 
@@ -28,6 +31,8 @@ export interface Preset {
   name: string;
   explanation: string;
   chain: EffectNode[];
+  /** Track mixer fader (dB) for the preset target track; host clamps to −36…+6. */
+  trackVolumeDb?: number;
 }
 
 export interface VoiceFeatures {
@@ -37,6 +42,17 @@ export interface VoiceFeatures {
   pitchHz: number;
   noiseFloorDb: number;
   voicedSeconds: number;
+  /** Tonic pitch class 0–11 (C=0). From beat key when a beat clip is loaded, else vocal. */
+  key: number;
+  /** 1 = major, 0 = minor. */
+  scaleMajor: number;
+  keyConfidence: number;
+  /** Higher = steadier pitch (0–1). */
+  pitchStability: number;
+  crestDb: number;
+  sibilanceRatio: number;
+  /** Beat BPM; 0 if unknown. */
+  bpm: number;
 }
 
 /** Placeholder until Tone.js is added. Engine.getVocalInput() returns Tone.ToneAudioNode. */

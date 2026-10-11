@@ -1,3 +1,4 @@
+import { pitchClassName } from '../../../../shared/musicKey';
 import type { VoiceFeatures } from '../../../../shared/types';
 
 export function FeatureList({
@@ -34,6 +35,22 @@ export function FeatureList({
           <dt>Voiced</dt>
           <dd>{formatSeconds(features.voicedSeconds)}s</dd>
         </div>
+        <div>
+          <dt>Key</dt>
+          <dd>
+            {features.keyConfidence > 0
+              ? `${pitchClassName(features.key)} ${features.scaleMajor >= 0.5 ? 'major' : 'minor'} (${formatPercent(features.keyConfidence)} conf.)`
+              : '—'}
+          </dd>
+        </div>
+        <div>
+          <dt>BPM</dt>
+          <dd>{features.bpm > 0 ? String(features.bpm) : '—'}</dd>
+        </div>
+        <div>
+          <dt>Pitch stability</dt>
+          <dd>{formatPercent(features.pitchStability)}</dd>
+        </div>
       </dl>
       {warnings.length > 0 ? (
         <ul className="measure-warnings">
@@ -56,4 +73,8 @@ function formatHz(value: number): string {
 
 function formatSeconds(value: number): string {
   return value.toFixed(1);
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }

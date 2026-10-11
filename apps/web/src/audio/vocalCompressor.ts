@@ -1,5 +1,5 @@
-import * as Tone from 'tone';
-import { equalPowerMix } from './autotuneSnap';
+import type * as Tone from 'tone';
+import { equalPowerMix } from './autotuneSnap.ts';
 
 export type VocalCompressorSettings = {
   thresholdDb: number;
@@ -9,10 +9,10 @@ export type VocalCompressorSettings = {
   kneeDb: number;
 };
 
-/** Map UI release to a slightly longer tail at moderate ratios (smoother vocals). */
+/** Map UI release a touch longer so the Web Audio compressor is less grabby. */
 export function vocalReleaseSec(releaseMs: number, ratio: number): number {
   const ms = Math.max(50, releaseMs);
-  const boost = ratio <= 3 ? 1.08 : ratio <= 6 ? 1 : 0.92;
+  const boost = ratio <= 3 ? 1.12 : ratio <= 6 ? 1.04 : 0.96;
   return (ms * boost) / 1000;
 }
 

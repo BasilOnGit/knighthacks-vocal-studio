@@ -6,6 +6,7 @@ import {
   generatePreset,
   ensureMixProtocol,
   promptRejectsSpace,
+  validateCurrentTrackVolume,
 } from '../src/preset.js';
 import { fakeFeatures } from '../../../shared/fakePreset.ts';
 import { validatePreset } from '../../../shared/validate.ts';
@@ -17,7 +18,7 @@ test('rejects malformed and oversized prompts', () => {
   }
 });
 
-test('requires six finite voice measurements', () => {
+test('requires finite voice measurements', () => {
   assert.deepEqual(validateFeatures(fakeFeatures), fakeFeatures);
   for (const features of [
     null,
@@ -66,11 +67,35 @@ test('generatePreset returns the fallback without calling the model when credent
   });
   assert.equal(calls, 0);
   assert.equal(result.source, 'fallback');
-  assert.equal(result.preset.name, 'Warm and close');
-  assert.deepEqual(
-    result.preset.chain.map((node) => node.type),
-    ['eq', 'compressor', 'reverb'],
+  assert.match(result.preset.name, /warm|r&b/i);
+  assert.ok(result.preset.chain.length > 0);
+  assert.equal(typeof result.preset.trackVolumeDb, 'number');
+  assert.ok(result.preset.trackVolumeDb <= 0);
+});
+
+test('validateCurrentTrackVolume clamps and rejects bad values', () => {
+  assert.equal(validateCurrentTrackVolume({}), undefined);
+  assert.equal(validateCurrentTrackVolume({ currentTrackVolumeDb: 3 }), 3);
+  assert.equal(validateCurrentTrackVolume({ currentTrackVolumeDb: 99 }), 6);
+  assert.throws(() => validateCurrentTrackVolume({ currentTrackVolumeDb: 'loud' }));
+});
+
+test('generatePreset keeps current fader on follow-up when model omits trackVolumeDb', async () => {
+  const modelPreset = {
+    name: 'Tweak',
+    explanation: 'More air',
+    chain: [{ type: 'eq', params: { airDb: 4 }, why: 'Brighter' }],
+  };
+  const result = await generatePreset(
+    'a bit brighter',
+    fakeFeatures,
+    {
+      ...modelOptions(async () => jsonResponse(JSON.stringify(modelPreset))),
+      currentTrackVolumeDb: 2.5,
+    },
   );
+  assert.equal(result.source, 'model');
+  assert.equal(result.preset.trackVolumeDb, 2.5);
 });
 
 test('generatePreset returns a validated model preset', async () => {
@@ -84,8 +109,10 @@ test('generatePreset returns a validated model preset', async () => {
       assert.equal(body.model, 'Qwen/Qwen2.5-7B-Instruct');
       assert.equal(body.response_format.type, 'json_object');
       assert.equal(init.headers.Authorization, 'Bearer test-token');
-      assert.match(body.messages[0].content, /gate: thresholdDb -80 to 15/);
-      assert.match(body.messages[0].content, /deesser: freqHz 4000 to 10000/);
+      assert.match(body.messages[0].content, /gate: thresholdDb -80 to 0/);
+      assert.match(body.messages[0].content, /denoise: amount 0 to 100/);
+      assert.match(body.messages[0].content, /denoise — place first when used/);
+      assert.match(body.messages[0].content, /deesser:.*freqHz 4000 to 16000/);
       assert.match(body.messages[1].content, /dreamy spacious vocals/);
       return jsonResponse(`\`\`\`json\n${JSON.stringify(dreamyPreset)}\n\`\`\``);
     }),
@@ -95,10 +122,11 @@ test('generatePreset returns a validated model preset', async () => {
   assert.equal(result.preset.name, 'Dreamy');
   assert.deepEqual(
     result.preset.chain.map((node) => node.type),
-    ['eq', 'reverb', 'delay'],
+    ['reverb', 'delay', 'eq'],
   );
-  assert.equal(result.preset.chain[1].params.mix, 0.4);
-  assert.equal(result.preset.chain[1].params.preDelayMs, 28);
+  assert.equal(result.preset.chain[0].params.mix, 40);
+  assert.equal(result.preset.chain[0].params.sizePct, 100);
+  assert.equal(result.preset.chain[0].params.tonePct, 18);
 });
 
 test('generatePreset retries once after invalid JSON', async () => {
@@ -133,7 +161,7 @@ test('generatePreset falls back after two invalid outputs', async () => {
   );
   assert.equal(calls, 2);
   assert.equal(result.source, 'fallback');
-  assert.equal(result.preset.name, 'Warm and close');
+  assert.match(result.preset.name, /warm|r&b/i);
 });
 
 test('generatePreset falls back when the model request throws', async () => {
@@ -148,7 +176,7 @@ test('generatePreset falls back when the model request throws', async () => {
   );
   assert.equal(calls, 1);
   assert.equal(result.source, 'fallback');
-  assert.equal(result.preset.name, 'Warm and close');
+  assert.match(result.preset.name, /warm|r&b/i);
 });
 
 test('clamps params that are out of range', () => {
@@ -169,7 +197,7 @@ test('accepts autotune in the chain', () => {
     chain: [{ type: 'autotune', params: { mix: 0.8, speed: 0.9 } }],
   });
   assert.equal(preset.chain[0].type, 'autotune');
-  assert.equal(preset.chain[0].params.mix, 0.8);
+  assert.equal(preset.chain[0].params.mix, 80);
   assert.equal(preset.chain[0].params.snap, 0.85);
 });
 
@@ -233,9 +261,9 @@ test('fills missing params and assigns a stable id', () => {
   assert.equal(preset.chain[0].enabled, true);
   assert.equal(preset.chain[0].params.lowCutHz, 90);
   assert.equal(preset.chain[0].params.lowShelfHz, 180);
-  assert.equal(preset.chain[0].params.bodyDb, -1.5);
-  assert.equal(preset.chain[0].params.presenceDb, 1.5);
-  assert.equal(preset.chain[0].params.airDb, 2);
+  assert.equal(preset.chain[0].params.bodyDb, 0);
+  assert.equal(preset.chain[0].params.presenceDb, 0);
+  assert.equal(preset.chain[0].params.airDb, 0);
 });
 
 test('preserves model chain order', () => {
@@ -254,18 +282,18 @@ test('preserves model chain order', () => {
   );
 });
 
-test('caps the chain at ten effects', () => {
+test('caps the chain at twelve effects', () => {
   const preset = validatePreset({
     name: 'Full',
     explanation: 'Everything',
-    chain: Array.from({ length: 11 }, (_, index) => ({
+    chain: Array.from({ length: 13 }, (_, index) => ({
       type: 'eq',
       params: { lowCutHz: 80 + index },
     })),
   });
-  assert.equal(preset.chain.length, 10);
+  assert.equal(preset.chain.length, 12);
   assert.equal(preset.chain[0].params.lowCutHz, 80);
-  assert.equal(preset.chain[9].params.lowCutHz, 89);
+  assert.equal(preset.chain[11].params.lowCutHz, 91);
 });
 
 test('throws when the preset shape is invalid', () => {
@@ -285,51 +313,51 @@ test('promptRejectsSpace detects dry requests', () => {
   assert.equal(promptRejectsSpace('dreamy spacious vocals'), false);
 });
 
-test('ensureMixProtocol prepends eq and appends reverb when missing', () => {
+test('ensureMixProtocol appends eq when missing and never adds reverb', () => {
   const preset = ensureMixProtocol(
     validatePreset({
       name: 'Bare',
       explanation: 'Only compression',
       chain: [{ type: 'compressor', params: { ratio: 3 } }],
     }),
-    'warm pop vocal',
   );
   assert.deepEqual(
     preset.chain.map((node) => node.type),
-    ['eq', 'compressor', 'reverb'],
+    ['compressor', 'eq'],
   );
 });
 
-test('ensureMixProtocol inserts eq after gate and autotune when model ordered them first', () => {
+test('ensureMixProtocol leaves model order when eq already exists', () => {
   const preset = ensureMixProtocol(
     validatePreset({
       name: 'Trap',
       explanation: 'Tuned lead',
       chain: [
         { type: 'gate', params: { thresholdDb: -40 } },
-        { type: 'autotune', params: { mix: 0.85 } },
+        { type: 'autotune', params: { mix: 85 } },
+        { type: 'eq', params: { lowCutHz: 100 } },
         { type: 'compressor', params: { ratio: 5 } },
       ],
     }),
-    'trap vocal',
   );
   assert.deepEqual(
     preset.chain.map((node) => node.type),
-    ['gate', 'autotune', 'eq', 'compressor', 'reverb'],
+    ['gate', 'autotune', 'eq', 'compressor'],
   );
 });
 
-test('ensureMixProtocol skips reverb when the prompt rejects space', () => {
-  const preset = ensureMixProtocol(
-    validatePreset({
-      name: 'Dry',
-      explanation: 'No space',
-      chain: [{ type: 'compressor', params: { ratio: 2 } }],
-    }),
-    'bone-dry vocal, no reverb',
-  );
-  assert.deepEqual(
-    preset.chain.map((node) => node.type),
-    ['eq', 'compressor'],
-  );
+test('matchSeed returns trap tuning for trap prompts', async () => {
+  const { matchSeed, SEED_SPECS } = await import('../../../shared/matchSeed.ts');
+  assert.ok(SEED_SPECS.length >= 18);
+  const trap = matchSeed('heavy trap autotune vocal');
+  assert.ok(trap.chain.some((node) => node.type === 'autotune'));
+  assert.ok(trap.chain[0].type === 'autotune' || trap.name.toLowerCase().includes('trap'));
+  const warm = matchSeed('warm intimate R&B');
+  assert.match(warm.name, /warm|r&b/i);
+  assert.notEqual(trap.name, warm.name);
+  const clean = matchSeed('please denoise my vocal');
+  assert.ok(clean.chain.some((node) => node.type === 'denoise'));
+  assert.equal(clean.chain[0].type, 'denoise');
+  const generic = matchSeed('vocal');
+  assert.match(generic.name, /balanced|pop/i);
 });

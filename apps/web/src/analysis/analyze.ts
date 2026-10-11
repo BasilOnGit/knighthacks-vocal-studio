@@ -1,11 +1,14 @@
 import Meyda from 'meyda';
-import { PitchDetector } from 'pitchy';
 import type { VoiceFeatures } from '../../../../shared/types';
+import { buildPitchTrack } from '../audio/pitchTrack.ts';
+import { keyFromPitchFrames } from './detectKey';
 
 const FRAME = 2048;
 const HOP = 1024;
 const SILENCE_DB = -120;
-const CLARITY_MIN = 0.9;
+const PITCH_STABILITY_CAP_SEMITONES = 6;
+const SIBILANCE_FRAME_STRIDE = 4;
+const MAX_SIBILANCE_FRAMES = 48;
 
 export function analyze(
   buffer: AudioBuffer,
@@ -35,13 +38,19 @@ export function analyze(
     }
   }
 
+  const pitchFrames = buildPitchTrack(buffer, { start, end });
+  const pitches = pitchFrames.filter((frame) => frame.pitchHz > 0).map((frame) => frame.pitchHz);
+  const keyResult = keyFromPitchFrames(pitchFrames);
+
   const centroids: number[] = [];
-  const pitches: number[] = [];
+  let sibilanceHigh = 0;
+  let sibilanceMid = 0;
+  let sibilanceSamples = 0;
   if (voicedOffsets.length > 0) {
     Meyda.bufferSize = FRAME;
     Meyda.sampleRate = sampleRate;
-    const detector = PitchDetector.forFloat32Array(FRAME);
-    for (const offset of voicedOffsets) {
+    for (let i = 0; i < voicedOffsets.length; i++) {
+      const offset = voicedOffsets[i];
       const frame = mono.subarray(offset, offset + FRAME);
       Meyda.bufferSize = FRAME;
       const extracted = Meyda.extract(['spectralCentroid'], frame);
@@ -49,21 +58,80 @@ export function analyze(
       if (typeof bins === 'number' && Number.isFinite(bins)) {
         centroids.push((bins * sampleRate) / FRAME);
       }
-      const [pitch, clarity] = detector.findPitch(frame, sampleRate);
-      if (clarity >= CLARITY_MIN && pitch > 0 && Number.isFinite(pitch)) {
-        pitches.push(pitch);
+      if (
+        sibilanceSamples < MAX_SIBILANCE_FRAMES &&
+        i % SIBILANCE_FRAME_STRIDE === 0
+      ) {
+        const bands = bandEnergies(frame, sampleRate);
+        sibilanceHigh += bands.high;
+        sibilanceMid += bands.mid;
+        sibilanceSamples += 1;
       }
     }
   }
 
+  const loudnessDb = voicedDb.length === 0 ? SILENCE_DB : mean(voicedDb);
+  const sibilanceRatio =
+    sibilanceMid > 0 ? sibilanceHigh / sibilanceMid : sibilanceHigh > 0 ? 1 : 0;
+
   return {
-    loudnessDb: voicedDb.length === 0 ? SILENCE_DB : mean(voicedDb),
+    loudnessDb,
     peakDb,
     centroidHz: centroids.length === 0 ? 0 : mean(centroids),
     pitchHz: pitches.length === 0 ? 0 : median(pitches),
     noiseFloorDb,
     voicedSeconds: (voicedOffsets.length * HOP) / sampleRate,
+    key: keyResult.key,
+    scaleMajor: keyResult.scaleMajor,
+    keyConfidence: keyResult.keyConfidence,
+    pitchStability: pitchStability(pitches),
+    crestDb: peakDb - loudnessDb,
+    sibilanceRatio,
+    bpm: 0,
   };
+}
+
+function hzToMidi(hz: number): number {
+  return 69 + 12 * Math.log2(hz / 440);
+}
+
+function pitchStability(pitches: number[]): number {
+  if (pitches.length < 2) {
+    return 0;
+  }
+  const midis = pitches.map((hz) => hzToMidi(hz));
+  const avg = mean(midis);
+  let variance = 0;
+  for (const midi of midis) {
+    variance += (midi - avg) ** 2;
+  }
+  const stdev = Math.sqrt(variance / midis.length);
+  return Math.max(0, Math.min(1, 1 - stdev / PITCH_STABILITY_CAP_SEMITONES));
+}
+
+function bandEnergies(
+  frame: Float32Array,
+  sampleRate: number,
+): { mid: number; high: number } {
+  Meyda.bufferSize = frame.length;
+  Meyda.sampleRate = sampleRate;
+  const spectrum = Meyda.extract('amplitudeSpectrum', frame) as number[] | undefined;
+  if (!spectrum?.length) {
+    return { mid: 0, high: 0 };
+  }
+  const binHz = sampleRate / frame.length;
+  let mid = 0;
+  let high = 0;
+  for (let i = 0; i < spectrum.length; i++) {
+    const freq = i * binHz;
+    const energy = spectrum[i] * spectrum[i];
+    if (freq >= 1000 && freq < 6000) {
+      mid += energy;
+    } else if (freq >= 6000) {
+      high += energy;
+    }
+  }
+  return { mid, high };
 }
 
 export function featureWarnings(features: VoiceFeatures): string[] {

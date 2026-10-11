@@ -1,3 +1,4 @@
+import { percentToUnit } from '../../../../shared/bandlabScale.ts';
 import { defaultParams } from '../../../../shared/params';
 import { FormantAutotune } from './formantAutotune';
 import { PitchCorrector, PLAYBACK_PITCH_LOOKBACK_SEC } from './pitchCorrector';
@@ -18,6 +19,10 @@ function readAutotuneParam(
   return defaultParams('autotune')[key] ?? 0;
 }
 
+function autotuneMix01(live: Record<string, number>): number {
+  return percentToUnit(readAutotuneParam(live, 'mix'));
+}
+
 export class AutotunePlayback {
   readonly shifter: FormantAutotune;
   private live: Record<string, number>;
@@ -30,7 +35,7 @@ export class AutotunePlayback {
   constructor(params: Record<string, number>) {
     this.live = { ...params };
     this.shifter = new FormantAutotune({ quality: 'studio' });
-    this.shifter.setMix(readAutotuneParam(this.live, 'mix'));
+    this.shifter.setMix(autotuneMix01(this.live));
     this.shifter.setPitchSemitones(readAutotuneParam(this.live, 'shiftSemitones'), 0);
   }
 
@@ -41,7 +46,7 @@ export class AutotunePlayback {
       this.shifter.setPitchSemitones(0, 0);
       this.shifter.setMix(0, 0);
     } else {
-      this.shifter.setMix(readAutotuneParam(this.live, 'mix'), 0);
+      this.shifter.setMix(autotuneMix01(this.live), 0);
       this.shifter.setPitchSemitones(readAutotuneParam(this.live, 'shiftSemitones'), 0);
     }
   }
@@ -90,7 +95,7 @@ export class AutotunePlayback {
     this.live[key] = value;
     if (key === 'mix') {
       if (this.effectEnabled) {
-        this.shifter.setMix(value);
+        this.shifter.setMix(percentToUnit(value));
       }
     } else if (key === 'shiftSemitones' && this.effectEnabled) {
       this.shifter.setPitchSemitones(this.corrector.correction + value);

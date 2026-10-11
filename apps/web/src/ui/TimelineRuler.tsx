@@ -1,13 +1,13 @@
 import { useTimelineScale } from '../session/TimelineScale';
-import { timelineSecFromClientX } from './TimelinePlayhead';
+import { timelineSecFromClientX } from '../session/timelineCoords';
 
 type TimelineRulerProps = {
   durationSec: number;
   seekDisabled?: boolean;
-  onSeek?: (sec: number) => void;
+  onJump?: (sec: number) => void;
 };
 
-export function TimelineRuler({ durationSec, seekDisabled = false, onSeek }: TimelineRulerProps) {
+export function TimelineRuler({ durationSec, seekDisabled = false, onJump }: TimelineRulerProps) {
   const { secToPx, pxPerSec } = useTimelineScale();
   const ticks: number[] = [];
   const step = durationSec > 120 ? 5 : pxPerSec < 40 ? 2 : 1;
@@ -22,14 +22,14 @@ export function TimelineRuler({ durationSec, seekDisabled = false, onSeek }: Tim
         className="timeline-ruler-track"
         style={{ width: secToPx(durationSec) }}
         onPointerDown={(event) => {
-          if (seekDisabled || event.button !== 0 || !onSeek) {
+          if (seekDisabled || event.button !== 0 || !onJump) {
             return;
           }
           const scroll = event.currentTarget.closest('.arrangement-h-scroll') as HTMLElement | null;
           if (!scroll) {
             return;
           }
-          onSeek(timelineSecFromClientX(event.clientX, scroll, durationSec, pxPerSec));
+          onJump(timelineSecFromClientX(event.clientX, scroll, durationSec, pxPerSec));
         }}
       >
         {ticks.map((t) => (

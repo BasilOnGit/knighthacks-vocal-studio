@@ -83,6 +83,15 @@ export function equalPowerMix(mix01: number): { dry: number; wet: number } {
   return { dry: Math.sqrt(1 - mix), wet: Math.sqrt(mix) };
 }
 
+/**
+ * BandLab-style send: dry stays up, wet is the mix percentage.
+ * Equal-power ducks the vocal and makes 40% mix sound like a bright wash.
+ */
+export function vocalSendMix(mix01: number): { dry: number; wet: number } {
+  const mix = Math.min(1, Math.max(0, mix01));
+  return { dry: 1 - mix * 0.1, wet: mix };
+}
+
 /** Time constant (seconds) of the correction smoothing; retune01=1 is fastest. */
 export function retuneTimeConstant(retune01: number): number {
   const clamped = Math.min(1, Math.max(0, retune01));

@@ -1,5 +1,5 @@
 import * as Tone from 'tone';
-import { equalPowerMix } from '../audio/autotuneSnap';
+import { equalPowerMix, vocalSendMix } from '../audio/autotuneSnap';
 import { AutotunePlayback } from '../audio/autotunePlayback';
 import { buildPitchTrack } from '../audio/pitchTrack';
 import { NoiseGate } from '../audio/noiseGate';
@@ -9,21 +9,22 @@ import {
   readVocalCompressorSettings,
   vocalReleaseSec,
 } from '../audio/vocalCompressor';
-import {
-  applyDelayMix,
-  vocalDelayFeedback,
-  VOCAL_DELAY_HPF_HZ,
-  VOCAL_DELAY_LPF_HZ,
-} from '../audio/vocalDelay';
+import { buildVocalDelaySlot } from '../audio/vocalDelayChain';
+import { VocalDenoise } from '../audio/vocalDenoise';
+import { VocalDoubler } from '../audio/vocalDoubler';
+import { VocalRider } from '../audio/vocalRider';
 import {
   applyReverbMix,
   vocalReverbLpfHz,
+  vocalReverbSendLpfHz,
+  vocalReverbWetTrimGain,
   VOCAL_REVERB_HPF_HZ,
 } from '../audio/vocalReverb';
 import {
   applySaturationMix,
   configureVocalShaper,
   saturationTrimDb,
+  VOCAL_SATURATION_POST_LPF_HZ,
 } from '../audio/vocalSaturation';
 import {
   applyVocalHighpass,
@@ -31,6 +32,16 @@ import {
   applyVocalShelf,
   vocalPeakingQ,
 } from '../audio/vocalEq';
+import {
+  applyDeesserCompressor,
+  applyDeesserCrossover,
+  deesserRatio,
+} from '../audio/vocalDeesser';
+import {
+  percentToUnit,
+  reverbSizeToDecaySec,
+  reverbSizeToPreDelayMs,
+} from '../../../../shared/bandlabScale.ts';
 import { defaultParams } from '../../../../shared/params';
 import type {
   EffectNode,
@@ -45,6 +56,7 @@ const RAMP_SEC = 0.05;
 const REVERB_DEBOUNCE_MS = 300;
 type RampParam = {
   rampTo(value: number, rampTime: number): unknown;
+  linearRampTo(value: number, rampTime: number): unknown;
 };
 
 type SlotParts = {
@@ -61,6 +73,10 @@ type SlotParts = {
   latencySec?: () => number;
   connectEffect: () => void;
   apply: (key: string, value: number) => void;
+  /** Clear time-based effect memory (delay lines, etc.) for deterministic playback. */
+  clearTail?: () => void;
+  /** Tear down parallel dry/wet taps when bypassing (insert effects only). */
+  disconnectOutputTaps?: () => void;
   dispose: () => void;
 };
 
@@ -86,6 +102,18 @@ function readParam(type: EffectType, params: Record<string, number>, key: string
 
 function ramp(param: RampParam, value: number) {
   param.rampTo(value, RAMP_SEC);
+}
+
+function rampLinearGain(gain: Tone.Gain, value: number) {
+  const now = Tone.now();
+  gain.gain.cancelScheduledValues(now);
+  gain.gain.setValueAtTime(gain.gain.value, now);
+  gain.gain.linearRampTo(value, RAMP_SEC);
+}
+
+/** dB gains are often ≤ 0; Tone's rampTo uses exponential ramps and can throw in the browser. */
+function rampDb(param: RampParam, value: number) {
+  param.linearRampTo(value, RAMP_SEC);
 }
 
 export class VocalChain implements VocalChainContract {
@@ -117,6 +145,12 @@ export class VocalChain implements VocalChainContract {
       previous = slot.output;
     }
     previous.connect(this.output);
+    // Parallel dry/wet effects wire their taps in build(); re-seat after the serial chain is linked.
+    for (const slot of this.slots) {
+      if ((slot.enabled || slot.keepRouted) && slot.disconnectOutputTaps) {
+        slot.connectEffect();
+      }
+    }
   }
 
   dispose(): void {
@@ -177,6 +211,13 @@ export class VocalChain implements VocalChainContract {
     }
   }
 
+  /** Flush delay/reverb state so each transport start matches the current slider values. */
+  resetEffectTails(): void {
+    for (const slot of this.slots) {
+      slot.clearTail?.();
+    }
+  }
+
   private teardown() {
     this.input.disconnect();
     for (const slot of this.slots) {
@@ -194,14 +235,12 @@ export class VocalChain implements VocalChainContract {
   private wire(slot: BuiltSlot) {
     if (slot.wired) {
       slot.input.disconnect();
-      if (slot.throughEffect) {
-        slot.tail.disconnect();
-      }
     }
     if (slot.enabled || slot.keepRouted) {
       slot.connectEffect();
       slot.throughEffect = true;
     } else {
+      slot.disconnectOutputTaps?.();
       slot.input.connect(slot.output);
       slot.throughEffect = false;
     }
@@ -231,6 +270,12 @@ export class VocalChain implements VocalChainContract {
     switch (type) {
       case 'gate':
         return this.buildGate(params);
+      case 'denoise':
+        return this.buildDenoise(params);
+      case 'rider':
+        return this.buildRider(params);
+      case 'doubler':
+        return this.buildDoubler(params);
       case 'autotune':
         return this.buildAutotune(id, params, enabled);
       case 'eq':
@@ -341,17 +386,17 @@ export class VocalChain implements VocalChainContract {
       apply: (key, value) => {
         if (key === 'lowCutHz') ramp(highpass.frequency, value);
         else if (key === 'lowShelfHz') ramp(lowshelf.frequency, value);
-        else if (key === 'lowShelfDb') ramp(lowshelf.gain, value);
+        else if (key === 'lowShelfDb') rampDb(lowshelf.gain, value);
         else if (key === 'bodyHz') ramp(body.frequency, value);
         else if (key === 'bodyDb') {
-          ramp(body.gain, value);
+          rampDb(body.gain, value);
           ramp(body.Q, vocalPeakingQ(value, 'body'));
         } else if (key === 'presenceHz') ramp(presence.frequency, value);
         else if (key === 'presenceDb') {
-          ramp(presence.gain, value);
+          rampDb(presence.gain, value);
           ramp(presence.Q, vocalPeakingQ(value, 'presence'));
         } else if (key === 'airHz') ramp(air.frequency, value);
-        else if (key === 'airDb') ramp(air.gain, value);
+        else if (key === 'airDb') rampDb(air.gain, value);
       },
       dispose: () => {
         highpass.dispose();
@@ -370,43 +415,36 @@ export class VocalChain implements VocalChainContract {
     const threshold = readParam('deesser', params, 'thresholdDb');
     const mix = readParam('deesser', params, 'mix');
 
-    const hpf = new Tone.Filter(freq, 'highpass');
-    const comp = new Tone.Compressor({
-      threshold,
-      ratio: 10,
-      attack: 0.003,
-      release: 0.08,
-      knee: 0,
-    });
-    const subtract = new Tone.Subtract();
-    const reduction = new Tone.Gain(-mix);
+    const low = new Tone.Filter();
+    const high = new Tone.Filter();
+    applyDeesserCrossover(low, high, freq);
+    const compressor = new Tone.Compressor();
+    applyDeesserCompressor(compressor, threshold, percentToUnit(mix));
     const input = new Tone.Gain(1);
     const output = new Tone.Gain(1);
-
-    hpf.connect(subtract);
-    hpf.connect(comp);
-    comp.connect(subtract.subtrahend);
-    subtract.connect(reduction);
+    high.connect(compressor);
 
     return {
       input,
       output,
-      tail: reduction,
+      tail: compressor,
       connectEffect: () => {
-        input.connect(output);
-        input.connect(hpf);
-        reduction.connect(output);
+        input.connect(low);
+        low.connect(output);
+        input.connect(high);
+        compressor.connect(output);
       },
       apply: (key, value) => {
-        if (key === 'freqHz') ramp(hpf.frequency, value);
-        else if (key === 'thresholdDb') ramp(comp.threshold, value);
-        else if (key === 'mix') reduction.gain.value = -value;
+        if (key === 'freqHz') {
+          ramp(low.frequency, value);
+          ramp(high.frequency, value);
+        } else if (key === 'thresholdDb') rampDb(compressor.threshold, value);
+        else if (key === 'mix') ramp(compressor.ratio, deesserRatio(percentToUnit(value)));
       },
       dispose: () => {
-        hpf.dispose();
-        comp.dispose();
-        subtract.dispose();
-        reduction.dispose();
+        low.dispose();
+        high.dispose();
+        compressor.dispose();
         input.dispose();
         output.dispose();
       },
@@ -420,7 +458,7 @@ export class VocalChain implements VocalChainContract {
     const makeup = new Tone.Gain(read('makeupDb'), 'decibels');
     const dry = new Tone.Gain(1);
     const wet = new Tone.Gain(1);
-    applyVocalCompressorMix(dry, wet, read('mix'));
+    applyVocalCompressorMix(dry, wet, percentToUnit(read('mix')));
     compressor.connect(makeup);
     const input = new Tone.Gain(1);
     const output = new Tone.Gain(1);
@@ -436,7 +474,7 @@ export class VocalChain implements VocalChainContract {
         wet.connect(output);
       },
       apply: (key, value) => {
-        if (key === 'thresholdDb') ramp(compressor.threshold, value);
+        if (key === 'thresholdDb') rampDb(compressor.threshold, value);
         else if (key === 'ratio') {
           ramp(compressor.ratio, value);
           ramp(
@@ -446,10 +484,10 @@ export class VocalChain implements VocalChainContract {
         } else if (key === 'attackMs') ramp(compressor.attack, value / 1000);
         else if (key === 'releaseMs') {
           ramp(compressor.release, vocalReleaseSec(value, read('ratio')));
-        } else if (key === 'kneeDb') ramp(compressor.knee, value);
-        else if (key === 'makeupDb') ramp(makeup.gain, value);
+        } else if (key === 'kneeDb') rampDb(compressor.knee, value);
+        else if (key === 'makeupDb') rampDb(makeup.gain, value);
         else if (key === 'mix') {
-          const { dry: d, wet: w } = equalPowerMix(value);
+          const { dry: d, wet: w } = equalPowerMix(percentToUnit(value));
           ramp(dry.gain, d);
           ramp(wet.gain, w);
         }
@@ -467,45 +505,41 @@ export class VocalChain implements VocalChainContract {
 
   private buildSaturation(params: Record<string, number>): SlotParts {
     const read = (key: string) => readParam('saturation', params, key);
-    const drive = read('drive');
-    const mix = read('mix');
-    const highpass = new Tone.Filter(140, 'highpass');
+    const drive = percentToUnit(read('drive'));
+    const mix = percentToUnit(read('mix'));
+    const highpass = new Tone.Filter(180, 'highpass');
     highpass.Q.value = 0.707;
     const shaper = new Tone.WaveShaper();
     configureVocalShaper(shaper, drive);
     const trim = new Tone.Gain(saturationTrimDb(drive), 'decibels');
-    const air = new Tone.Filter({
-      type: 'highshelf',
-      frequency: 10_000,
-      gain: Math.min(2.5, drive * 4),
-    });
-    air.Q.value = 0.55;
+    const smooth = new Tone.Filter(VOCAL_SATURATION_POST_LPF_HZ, 'lowpass');
+    smooth.Q.value = 0.5;
     const dry = new Tone.Gain(1);
     const wet = new Tone.Gain(1);
     applySaturationMix(dry, wet, mix);
     highpass.connect(shaper);
     shaper.connect(trim);
-    trim.connect(air);
+    trim.connect(smooth);
     const input = new Tone.Gain(1);
     const output = new Tone.Gain(1);
     return {
       input,
       output,
-      tail: air,
+      tail: smooth,
       connectEffect: () => {
         input.connect(dry);
         dry.connect(output);
         input.connect(highpass);
-        air.connect(wet);
+        smooth.connect(wet);
         wet.connect(output);
       },
       apply: (key, value) => {
         if (key === 'drive') {
-          configureVocalShaper(shaper, value);
-          ramp(trim.gain, saturationTrimDb(value));
-          ramp(air.gain, Math.min(2.5, value * 4));
+          const drive01 = percentToUnit(value);
+          configureVocalShaper(shaper, drive01);
+          rampDb(trim.gain, saturationTrimDb(drive01));
         } else if (key === 'mix') {
-          const { dry: d, wet: w } = equalPowerMix(value);
+          const { dry: d, wet: w } = equalPowerMix(percentToUnit(value));
           ramp(dry.gain, d);
           ramp(wet.gain, w);
         }
@@ -514,7 +548,7 @@ export class VocalChain implements VocalChainContract {
         highpass.dispose();
         shaper.dispose();
         trim.dispose();
-        air.dispose();
+        smooth.dispose();
         dry.dispose();
         wet.dispose();
         input.dispose();
@@ -526,15 +560,15 @@ export class VocalChain implements VocalChainContract {
   private buildChorus(params: Record<string, number>): SlotParts {
     const chorus = new Tone.Chorus({
       frequency: readParam('chorus', params, 'rateHz'),
-      depth: readParam('chorus', params, 'depth'),
+      depth: percentToUnit(readParam('chorus', params, 'depth')),
     }).start();
-    chorus.wet.value = readParam('chorus', params, 'mix');
+    chorus.wet.value = percentToUnit(readParam('chorus', params, 'mix'));
     return this.single(
       chorus,
       (key, value) => {
         if (key === 'rateHz') ramp(chorus.frequency, value);
-        else if (key === 'depth') chorus.depth = value;
-        else if (key === 'mix') ramp(chorus.wet, value);
+        else if (key === 'depth') chorus.depth = percentToUnit(value);
+        else if (key === 'mix') ramp(chorus.wet, percentToUnit(value));
       },
       () => {
         chorus.stop();
@@ -543,77 +577,38 @@ export class VocalChain implements VocalChainContract {
   }
 
   private buildDelay(params: Record<string, number>): SlotParts {
-    const read = (key: string) => readParam('delay', params, key);
-    const timeSec = read('timeMs') / 1000;
-    const feedback = vocalDelayFeedback(read('feedback'));
-    const mix = read('mix');
-    const line = new Tone.Delay({ delayTime: timeSec, maxDelay: 2 });
-    const feedbackGain = new Tone.Gain(feedback);
-    const highpass = new Tone.Filter(VOCAL_DELAY_HPF_HZ, 'highpass');
-    highpass.Q.value = 0.707;
-    const lowpass = new Tone.Filter(VOCAL_DELAY_LPF_HZ, 'lowpass');
-    lowpass.Q.value = 0.707;
-    const dry = new Tone.Gain(1);
-    const wet = new Tone.Gain(1);
-    applyDelayMix(dry, wet, mix);
-    line.connect(lowpass);
-    lowpass.connect(highpass);
-    highpass.connect(feedbackGain);
-    feedbackGain.connect(line);
-    const input = new Tone.Gain(1);
-    const output = new Tone.Gain(1);
-    return {
-      input,
-      output,
-      tail: line,
-      connectEffect: () => {
-        input.connect(dry);
-        dry.connect(output);
-        input.connect(line);
-        highpass.connect(wet);
-        wet.connect(output);
-      },
-      apply: (key, value) => {
-        if (key === 'timeMs') ramp(line.delayTime, value / 1000);
-        else if (key === 'feedback') ramp(feedbackGain.gain, vocalDelayFeedback(value));
-        else if (key === 'mix') {
-          const { dry: d, wet: w } = equalPowerMix(value);
-          ramp(dry.gain, d);
-          ramp(wet.gain, w);
-        }
-      },
-      dispose: () => {
-        line.dispose();
-        feedbackGain.dispose();
-        highpass.dispose();
-        lowpass.dispose();
-        dry.dispose();
-        wet.dispose();
-        input.dispose();
-        output.dispose();
-      },
-    };
+    return buildVocalDelaySlot(params, (param, seconds) => ramp(param as RampParam, seconds), rampLinearGain);
   }
 
   private buildReverb(id: string, params: Record<string, number>): SlotParts {
     const read = (key: string) => readParam('reverb', params, key);
-    const decaySec = read('decaySec');
+    const sizePct = read('sizePct');
+    const tonePct = read('tonePct');
+    const decaySec = reverbSizeToDecaySec(sizePct);
     const reverb = new Tone.Reverb({
       decay: decaySec,
-      preDelay: read('preDelayMs') / 1000,
+      preDelay: reverbSizeToPreDelayMs(sizePct) / 1000,
     });
     reverb.wet.value = 1;
-    const highpass = new Tone.Filter(VOCAL_REVERB_HPF_HZ, 'highpass');
-    highpass.Q.value = 0.707;
-    const lowpass = new Tone.Filter(vocalReverbLpfHz(decaySec), 'lowpass');
-    lowpass.Q.value = 0.707;
+    const sendHpf = new Tone.Filter(VOCAL_REVERB_HPF_HZ, 'highpass');
+    sendHpf.Q.value = 0.5;
+    const sendLpf = new Tone.Filter(vocalReverbSendLpfHz(decaySec, tonePct), 'lowpass');
+    sendLpf.Q.value = 0.5;
+    const tailLpf = new Tone.Filter(vocalReverbLpfHz(decaySec, tonePct), 'lowpass');
+    tailLpf.Q.value = 0.5;
+    tailLpf.rolloff = -24;
+    const wetTrim = new Tone.Gain(vocalReverbWetTrimGain());
     const dry = new Tone.Gain(1);
     const wet = new Tone.Gain(1);
-    applyReverbMix(dry, wet, read('mix'));
-    reverb.connect(highpass);
-    highpass.connect(lowpass);
+    applyReverbMix(dry, wet, percentToUnit(read('mix')));
+    sendHpf.connect(sendLpf);
+    sendLpf.connect(reverb);
+    reverb.connect(tailLpf);
+    tailLpf.connect(wetTrim);
     const input = new Tone.Gain(1);
     const output = new Tone.Gain(1);
+    let liveSizePct = sizePct;
+    let liveTonePct = tonePct;
     return {
       input,
       output,
@@ -621,26 +616,30 @@ export class VocalChain implements VocalChainContract {
       connectEffect: () => {
         input.connect(dry);
         dry.connect(output);
-        input.connect(reverb);
-        lowpass.connect(wet);
+        input.connect(sendHpf);
+        wetTrim.connect(wet);
         wet.connect(output);
       },
       apply: (key, value) => {
         if (key === 'mix') {
-          const { dry: d, wet: w } = equalPowerMix(value);
+          const { dry: d, wet: w } = vocalSendMix(percentToUnit(value));
           ramp(dry.gain, d);
           ramp(wet.gain, w);
           return;
         }
-        if (key === 'decaySec') {
-          ramp(lowpass.frequency, vocalReverbLpfHz(value));
+        if (key === 'sizePct') liveSizePct = value;
+        if (key === 'tonePct') liveTonePct = value;
+        if (key === 'sizePct' || key === 'tonePct') {
+          const decay = reverbSizeToDecaySec(liveSizePct);
+          ramp(sendLpf.frequency, vocalReverbSendLpfHz(decay, liveTonePct));
+          ramp(tailLpf.frequency, vocalReverbLpfHz(decay, liveTonePct));
         }
-        if (key !== 'decaySec' && key !== 'preDelayMs') {
+        if (key !== 'sizePct') {
           return;
         }
         const pending = this.pendingReverb.get(id) ?? {};
-        if (key === 'decaySec') pending.decay = value;
-        else pending.preDelay = value / 1000;
+        pending.decay = reverbSizeToDecaySec(value);
+        pending.preDelay = reverbSizeToPreDelayMs(value) / 1000;
         this.pendingReverb.set(id, pending);
         const existing = this.reverbTimers.get(id);
         if (existing != null) clearTimeout(existing);
@@ -662,14 +661,41 @@ export class VocalChain implements VocalChainContract {
         this.reverbTimers.delete(id);
         this.pendingReverb.delete(id);
         reverb.dispose();
-        highpass.dispose();
-        lowpass.dispose();
+        sendHpf.dispose();
+        sendLpf.dispose();
+        tailLpf.dispose();
+        wetTrim.dispose();
         dry.dispose();
         wet.dispose();
         input.dispose();
         output.dispose();
       },
     };
+  }
+
+  private buildDenoise(params: Record<string, number>): SlotParts {
+    const denoise = new VocalDenoise(readParam('denoise', params, 'amount'));
+    return this.single(denoise, (key, value) => {
+      if (key === 'amount') denoise.setAmount(value, RAMP_SEC);
+    });
+  }
+
+  private buildRider(params: Record<string, number>): SlotParts {
+    const rider = new VocalRider({
+      targetDb: readParam('rider', params, 'targetDb'),
+      speed: readParam('rider', params, 'speed'),
+      maxGainDb: readParam('rider', params, 'maxGainDb'),
+    });
+    return this.single(rider, (key, value) => rider.updateParam(key, value, RAMP_SEC));
+  }
+
+  private buildDoubler(params: Record<string, number>): SlotParts {
+    const doubler = new VocalDoubler({
+      mix: readParam('doubler', params, 'mix'),
+      delayMs: readParam('doubler', params, 'delayMs'),
+      width: readParam('doubler', params, 'width'),
+    });
+    return this.single(doubler, (key, value) => doubler.updateParam(key, value, RAMP_SEC));
   }
 
   private single(

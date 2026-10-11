@@ -1,52 +1,81 @@
 import React from 'react';
 import { PITCH_CLASS_NAMES } from '../../../../shared/musicKey';
-import { PARAM_RANGES } from '../../../../shared/params';
+import { PARAM_RANGES, type ParamRange } from '../../../../shared/params';
 import type { EffectNode, EffectType, Preset } from '../../../../shared/types';
+import { EqSpectrumEditor } from './EqSpectrumEditor';
+
+const GATE_LABELS: Record<string, string> = {
+  thresholdDb: 'Threshold',
+  attackMs: 'Attack',
+  releaseMs: 'Release',
+};
 
 const DELAY_LABELS: Record<string, string> = {
-  timeMs: 'Delay time',
-  feedback: 'Feedback — repeats (filtered to stay vocal-friendly)',
-  mix: 'Blend — dry vs delay',
+  timeMs: 'Time',
+  feedback: 'Feedback',
+  mix: 'Wet level',
+  pingPong: 'Ping-pong',
+};
+
+const DENOISE_LABELS: Record<string, string> = {
+  amount: 'Amount',
+};
+
+const RIDER_LABELS: Record<string, string> = {
+  targetDb: 'Target level',
+  speed: 'Speed',
+  maxGainDb: 'Max boost',
+};
+
+const DOUBLER_LABELS: Record<string, string> = {
+  mix: 'Mix',
+  delayMs: 'Delay',
+  width: 'Width',
 };
 
 const REVERB_LABELS: Record<string, string> = {
-  decaySec: 'Decay — room length',
-  preDelayMs: 'Pre-delay — space before the tail',
-  mix: 'Blend — dry vs reverb',
+  mix: 'Mix',
+  sizePct: 'Size',
+  tonePct: 'Tone',
 };
 
 const SATURATION_LABELS: Record<string, string> = {
-  drive: 'Harmonics — warmth and edge (parallel blend keeps it natural)',
-  mix: 'Blend — dry vs saturated',
+  drive: 'Drive',
+  mix: 'Mix',
+};
+
+const DEESSER_LABELS: Record<string, string> = {
+  freqHz: 'Frequency',
+  thresholdDb: 'Threshold',
 };
 
 const COMPRESSOR_LABELS: Record<string, string> = {
-  thresholdDb: 'Threshold — level where compression starts',
-  ratio: 'Ratio — amount of gain reduction',
-  attackMs: 'Attack — how fast gain reduction kicks in',
-  releaseMs: 'Release — how fast the vocal opens back up',
-  makeupDb: 'Makeup gain on compressed signal',
-  kneeDb: 'Knee — soft = smoother, hard = more grabby',
-  mix: 'Blend — dry vs compressed (parallel)',
+  thresholdDb: 'Threshold',
+  ratio: 'Ratio',
+  attackMs: 'Attack',
+  releaseMs: 'Release',
+  makeupDb: 'Output',
+  kneeDb: 'Knee',
+  mix: 'Mix',
 };
 
 const EQ_LABELS: Record<string, string> = {
-  lowCutHz: 'High-pass — rumble and room below this',
+  lowShelfDb: 'Low',
+  bodyDb: 'Mid',
+  airDb: 'High',
+  bodyHz: 'Mid sweep',
+  lowCutHz: 'High-pass',
   lowShelfHz: 'Low shelf frequency',
-  lowShelfDb: 'Low warmth — body and weight',
-  bodyHz: 'Mud / body center',
-  bodyDb: 'Mud cut or body boost',
-  presenceHz: 'Presence — consonants and cut',
-  presenceDb: 'Forward presence',
-  airHz: 'Air band — brightness shelf',
-  airDb: 'Air and shimmer',
+  presenceHz: 'Presence frequency',
+  presenceDb: 'Presence',
+  airHz: 'High shelf frequency',
 };
 
 const AUTOTUNE_LABELS: Record<string, string> = {
-  mix: 'Mix — amount of pitch correction (0 = bypass, 1 = full)',
-  retuneSpeed: 'Retune speed — higher locks to notes faster',
-  speed: 'Legacy tuning knob (reserved; formant engine ignores this)',
-  snap: 'Snap — how hard notes pull to the scale',
+  mix: 'Correct',
+  retuneSpeed: 'Retune speed (up to 400%)',
+  speed: 'Legacy speed (unused)',
+  snap: 'Snap — note lock (100% = trap / T-Pain style)',
   key: 'Key',
   scaleMajor: 'Scale',
   shiftSemitones: 'Pitch shift (semitones)',
@@ -60,7 +89,32 @@ function formatValue(value: number, step: number): string {
   return step < 1 ? value.toFixed(step === 0.01 ? 2 : 1) : String(value);
 }
 
+function mixControlLabel(type: EffectType): string {
+  if (type === 'delay') return 'Wet';
+  if (type === 'reverb') return 'Mix';
+  if (type === 'compressor') return 'Mix';
+  if (type === 'saturation') return 'Mix';
+  if (type === 'deesser') return 'Amount';
+  if (type === 'autotune') return 'Correct';
+  if (type === 'chorus') return 'Wet';
+  return 'Mix';
+}
+
+function mixPercent(value: number, range: ParamRange): number {
+  if (range.unit === 'percent') {
+    return Math.round(value);
+  }
+  const span = range.max - range.min;
+  if (span <= 0) {
+    return 0;
+  }
+  return Math.round(((value - range.min) / span) * 100);
+}
+
 function paramLabel(type: EffectType, key: string): string {
+  if (type === 'gate' && key in GATE_LABELS) {
+    return GATE_LABELS[key];
+  }
   if (type === 'delay' && key in DELAY_LABELS) {
     return DELAY_LABELS[key];
   }
@@ -70,6 +124,9 @@ function paramLabel(type: EffectType, key: string): string {
   if (type === 'saturation' && key in SATURATION_LABELS) {
     return SATURATION_LABELS[key];
   }
+  if (type === 'deesser' && key in DEESSER_LABELS) {
+    return DEESSER_LABELS[key];
+  }
   if (type === 'compressor' && key in COMPRESSOR_LABELS) {
     return COMPRESSOR_LABELS[key];
   }
@@ -78,6 +135,18 @@ function paramLabel(type: EffectType, key: string): string {
   }
   if (type === 'autotune' && key in AUTOTUNE_LABELS) {
     return AUTOTUNE_LABELS[key];
+  }
+  if (type === 'denoise' && key in DENOISE_LABELS) {
+    return DENOISE_LABELS[key];
+  }
+  if (type === 'rider' && key in RIDER_LABELS) {
+    return RIDER_LABELS[key];
+  }
+  if (type === 'doubler' && key in DOUBLER_LABELS) {
+    return DOUBLER_LABELS[key];
+  }
+  if (key === 'pingPong') {
+    return 'Ping-pong';
   }
   return key
     .replace(/([A-Z])/g, ' $1')
@@ -95,41 +164,88 @@ function effectTypeLabel(node: EffectNode, preset: Preset): string {
 }
 
 export function EffectsPanel({
-  compact = false,
   preset,
   source,
+  trackLabel,
+  trackId,
+  getSpectrumDb,
+  audioSampleRate,
+  editedSinceGenerate,
+  generateSummary,
   onParamChange,
   onEnabledChange,
   onReset,
   onRemove,
+  onMove,
+  onClearAll,
+  clearAllDisabled,
 }: {
-  compact?: boolean;
   preset: Preset;
   source: string | null;
+  trackLabel?: string;
+  trackId?: string;
+  getSpectrumDb?: () => Float32Array | null;
+  audioSampleRate?: number;
+  editedSinceGenerate?: boolean;
+  generateSummary?: string[] | null;
   onParamChange: (id: string, key: string, value: number) => void;
   onEnabledChange: (id: string, enabled: boolean) => void;
   onReset?: () => void;
   onRemove: (id: string) => void;
+  onMove?: (id: string, delta: -1 | 1) => void;
+  onClearAll?: () => void;
+  clearAllDisabled?: boolean;
 }) {
-  const [activeEffect,setActiveEffect]=React.useState('');
-  const current=preset.chain.find(node=>node.id===activeEffect)??preset.chain[0];
   return (
     <section className="preset" aria-label="Preset">
+      {trackLabel ? <p className="track-fx-label">Track effects · {trackLabel}</p> : null}
       {source === 'fallback' ? (
         <p className="fixture-label">Using fallback preset, AI unavailable</p>
       ) : null}
-      <h2>{preset.name}</h2>
+      {generateSummary && generateSummary.length > 0 ? (
+        <ul className="preset-change-summary">
+          {generateSummary.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      ) : null}
+      {editedSinceGenerate && onReset ? (
+        <p className="preset-edited-hint">
+          You changed settings since the last AI generate.{' '}
+          <button type="button" className="preset-reset-inline" onClick={onReset}>
+            Reset to generated chain
+          </button>
+        </p>
+      ) : null}
+      <div className="preset-heading-row">
+        <h2>{preset.name}</h2>
+        {onClearAll ? (
+          <button
+            type="button"
+            className="preset-clear-all"
+            disabled={clearAllDisabled}
+            onClick={onClearAll}
+          >
+            Clear all effects
+          </button>
+        ) : null}
+      </div>
       <p>{preset.explanation}</p>
-      {compact && preset.chain.length>1 && <label className="active-effect-picker">Edit effect<select aria-label="Edit effect" value={current?.id??''} onChange={e=>setActiveEffect(e.target.value)}>{preset.chain.map(node=><option key={node.id} value={node.id}>{node.type}{node.enabled?'':' (off)'}</option>)}</select></label>}
       <ul className="chain">
-        {(compact ? current ? [current] : [] : preset.chain).map((node) => (
+        {preset.chain.map((node, index) => (
           <EffectCard
             key={node.id}
             node={node}
             typeLabel={effectTypeLabel(node, preset)}
+            canMoveUp={index > 0}
+            canMoveDown={index < preset.chain.length - 1}
+            onMove={onMove}
             onParamChange={onParamChange}
             onEnabledChange={onEnabledChange}
             onRemove={onRemove}
+            trackId={trackId}
+            getSpectrumDb={getSpectrumDb}
+            audioSampleRate={audioSampleRate}
           />
         ))}
       </ul>
@@ -141,96 +257,214 @@ export function EffectsPanel({
 function EffectCard({
   node,
   typeLabel,
+  canMoveUp,
+  canMoveDown,
+  onMove,
   onParamChange,
   onEnabledChange,
   onRemove,
+  trackId,
+  getSpectrumDb,
+  audioSampleRate,
 }: {
   node: EffectNode;
   typeLabel: string;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove?: (id: string, delta: -1 | 1) => void;
   onParamChange: (id: string, key: string, value: number) => void;
   onEnabledChange: (id: string, enabled: boolean) => void;
   onRemove: (id: string) => void;
+  trackId?: string;
+  getSpectrumDb?: () => Float32Array | null;
+  audioSampleRate?: number;
 }) {
   const ranges = PARAM_RANGES[node.type];
-  return (
-    <li>
-      <div className="effect-head">
-        <div>
-          <strong>{typeLabel}</strong>
-          {node.why ? <span> — {node.why}</span> : null}
-        </div>
-        <label className="transport-toggle">
-          <input
-            type="checkbox"
-            checked={node.enabled}
-            onChange={(event) => onEnabledChange(node.id, event.target.checked)}
-          />
-          On
+  const mixRange = 'mix' in ranges ? ranges.mix : null;
+  const mixValue = mixRange ? (node.params.mix ?? mixRange.default) : 0;
+  const paramEntries = Object.entries(ranges).filter(([key]) => key !== 'mix');
+  const primaryParams = paramEntries.filter(([, range]) => !range.advanced);
+  const advancedParams = paramEntries.filter(([, range]) => range.advanced);
+
+  function renderParam(key: string, range: ParamRange) {
+    const step = sliderStep(range.min, range.max);
+    const value = node.params[key] ?? range.default;
+    const label = paramLabel(node.type, key);
+
+    if (node.type === 'autotune' && key === 'key') {
+      const keyIndex = Math.min(11, Math.max(0, Math.round(value)));
+      return (
+        <label key={key} className="param param--select">
+          <span>{label}</span>
+          <select
+            aria-label={`${node.type} key`}
+            value={keyIndex}
+            onChange={(event) =>
+              onParamChange(node.id, key, Number(event.target.value))
+            }
+          >
+            {PITCH_CLASS_NAMES.map((name, index) => (
+              <option key={name} value={index}>{name}</option>
+            ))}
+          </select>
         </label>
-      </div>
-      <button type="button" className="remove-effect" aria-label={`Remove ${node.type}`} onClick={()=>onRemove(node.id)}>Remove</button>
-      <details open><summary>Fine-tune parameters</summary><div className="params">
-        {Object.entries(ranges).map(([key, range]) => {
-          const step = sliderStep(range.min, range.max);
-          const value = node.params[key] ?? range.default;
-          const label = paramLabel(node.type, key);
+      );
+    }
 
-          if (node.type === 'autotune' && key === 'key') {
-            const keyIndex = Math.min(11, Math.max(0, Math.round(value)));
-            return (
-              <label key={key} className="param param--select">
-                <span>{label}</span>
-                <select
-                  aria-label={`${node.type} key`}
-                  value={keyIndex}
-                  onChange={(event) =>
-                    onParamChange(node.id, key, Number(event.target.value))
-                  }
-                >
-                  {PITCH_CLASS_NAMES.map((name, index) => (
-                    <option key={name} value={index}>{name}</option>
-                  ))}
-                </select>
-              </label>
-            );
-          }
+    if (node.type === 'autotune' && key === 'scaleMajor') {
+      const major = value >= 0.5 ? 1 : 0;
+      return (
+        <label key={key} className="param param--select">
+          <span>{label}</span>
+          <select
+            aria-label={`${node.type} scale`}
+            value={major}
+            onChange={(event) =>
+              onParamChange(node.id, key, Number(event.target.value))
+            }
+          >
+            <option value={1}>Major</option>
+            <option value={0}>Minor</option>
+          </select>
+        </label>
+      );
+    }
 
-          if (node.type === 'autotune' && key === 'scaleMajor') {
-            const major = value >= 0.5 ? 1 : 0;
-            return (
-              <label key={key} className="param param--select">
-                <span>{label}</span>
-                <select
-                  aria-label={`${node.type} scale`}
-                  value={major}
-                  onChange={(event) =>
-                    onParamChange(node.id, key, Number(event.target.value))
-                  }
-                >
-                  <option value={1}>Major</option>
-                  <option value={0}>Minor</option>
-                </select>
-              </label>
-            );
-          }
+    const unitSuffix =
+      range.unit === 'percent'
+        ? '%'
+        : range.unit === 'db'
+          ? ' dB'
+          : range.unit === 'ms'
+            ? ' ms'
+            : range.unit === 'hz'
+              ? ' Hz'
+              : range.unit === 'ratio'
+                ? ':1'
+                : '';
 
-          return (
-            <label key={key} className="param">
-              <span>{label}</span>
+    return (
+      <label key={key} className="param">
+        <span>{label}</span>
+        <input
+          type="range"
+          min={range.min}
+          max={range.max}
+          step={step}
+          value={value}
+          aria-label={`${node.type} ${key}`}
+          onChange={(event) => onParamChange(node.id, key, Number(event.target.value))}
+        />
+        <input
+          className="param-number"
+          aria-label={`${node.type} ${key} value`}
+          type="number"
+          min={range.min}
+          max={range.max}
+          step={step}
+          value={Number(formatValue(value, step))}
+          onChange={(e) => {
+            const n = e.target.valueAsNumber;
+            if (Number.isFinite(n)) {
+              onParamChange(node.id, key, Math.max(range.min, Math.min(range.max, n)));
+            }
+          }}
+        />
+        {unitSuffix ? <span className="param-unit">{unitSuffix}</span> : null}
+      </label>
+    );
+  }
+
+  return (
+    <li className="effect-card">
+      <div className="effect-card-layout">
+        <div className="effect-card-main">
+          <div className="effect-head">
+            <div>
+              <strong>{typeLabel}</strong>
+              {node.why ? <span> — {node.why}</span> : null}
+            </div>
+            <label className="transport-toggle">
               <input
-                type="range"
-                min={range.min}
-                max={range.max}
-                step={step}
-                value={value}
-                aria-label={`${node.type} ${key}`}
-                onChange={(event) => onParamChange(node.id, key, Number(event.target.value))}
+                type="checkbox"
+                checked={node.enabled}
+                onChange={(event) => onEnabledChange(node.id, event.target.checked)}
               />
-              <input className="param-number" aria-label={`${node.type} ${key} value`} type="number" min={range.min} max={range.max} step={step} value={Number(formatValue(value, step))} onChange={e=>{ const n=e.target.valueAsNumber; if(Number.isFinite(n)) onParamChange(node.id,key,Math.max(range.min,Math.min(range.max,n))); }} />
+              On
             </label>
-          );
-        })}
-      </div></details>
+          </div>
+          {onMove ? (
+            <div className="effect-order-actions">
+              <button
+                type="button"
+                disabled={!canMoveUp}
+                aria-label={`Move ${node.type} up`}
+                onClick={() => onMove(node.id, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                disabled={!canMoveDown}
+                aria-label={`Move ${node.type} down`}
+                onClick={() => onMove(node.id, 1)}
+              >
+                ↓
+              </button>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="remove-effect"
+            aria-label={`Remove ${node.type}`}
+            onClick={() => onRemove(node.id)}
+          >
+            Remove
+          </button>
+          {node.type === 'eq' ? (
+            <EqSpectrumEditor
+              params={node.params}
+              enabled={node.enabled}
+              onParamChange={(key, value) => onParamChange(node.id, key, value)}
+              getSpectrumDb={trackId ? getSpectrumDb : undefined}
+              sampleRate={audioSampleRate}
+            />
+          ) : null}
+          <details open={node.type !== 'eq'}>
+            <summary>{node.type === 'eq' ? 'Fine sliders' : 'Parameters'}</summary>
+            <div className="params">
+              {node.type === 'eq'
+                ? paramEntries.map(([key, range]) => renderParam(key, range))
+                : primaryParams.map(([key, range]) => renderParam(key, range))}
+            </div>
+            {node.type !== 'eq' && advancedParams.length > 0 ? (
+              <details className="params-advanced">
+                <summary>More</summary>
+                <div className="params">
+                  {advancedParams.map(([key, range]) => renderParam(key, range))}
+                </div>
+              </details>
+            ) : null}
+          </details>
+        </div>
+        {mixRange ? (
+          <label className="effect-mix" aria-label={paramLabel(node.type, 'mix')}>
+            <span className="effect-mix__value">{mixPercent(mixValue, mixRange)}%</span>
+            <input
+              className="effect-mix__slider"
+              type="range"
+              min={mixRange.min}
+              max={mixRange.max}
+              step={sliderStep(mixRange.min, mixRange.max)}
+              value={mixValue}
+              onChange={(event) =>
+                onParamChange(node.id, 'mix', Number(event.target.value))
+              }
+            />
+            <span className="effect-mix__label">{mixControlLabel(node.type)}</span>
+          </label>
+        ) : null}
+      </div>
     </li>
   );
 }

@@ -19,7 +19,7 @@ Copy `apps/api/.env.example` to `apps/api/.env` when configuring integrations. N
 - Node API that validates the prompt and voice measurements, calls Hugging Face when `HF_TOKEN` and `HF_MODEL` are set, and returns a labeled fallback preset if that call fails.
 - Hugging Face and Neon environment placeholders, plus the team build plan.
 
-The updated studio supports audio imports, recording onto multiple tracks, overlapping snippets, per-snippet effects, waveform trimming, clip deletion with Backspace/Delete, microphone monitoring, and track/master mixing. Desktop controls fit within the viewport; track and inspector panels scroll independently. Export and saved sessions are not implemented. Neon is the database; the Node server is the backend application.
+The updated studio supports audio imports, recording onto multiple tracks, overlapping snippets, **track-level effect chains** (BandLab-style — all clips on a track share the same FX), per-clip volume/pan/trim, waveform trimming, clip deletion with Backspace/Delete, microphone monitoring, track/master mixing, loop playback, mix export, and browser-local session restore (IndexedDB for audio). Neon is the database; the Node server is the backend application.
 
 ## Checks
 `npm test` checks backend prompt validation.

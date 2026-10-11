@@ -1,37 +1,30 @@
 import { useTimelineScale } from '../session/TimelineScale';
+import { timelineSecFromClientX } from '../session/timelineCoords';
+import type { SeekPhase } from '../hooks/usePlayheadTransport';
 import React from 'react';
 
 type TimelinePlayheadProps = {
   positionSec: number;
   durationSec: number;
   disabled?: boolean;
-  onPositionChange: (sec: number) => void;
+  onSeek: (sec: number, phase: SeekPhase) => void;
+  onJump: (sec: number) => void;
 };
-
-export function timelineSecFromClientX(
-  clientX: number,
-  scrollEl: HTMLElement,
-  durationSec: number,
-  pxPerSec = 40,
-): number {
-  const scrollRect = scrollEl.getBoundingClientRect();
-  const header = parseFloat(getComputedStyle(scrollEl).getPropertyValue('--lane-header-width')) || 190;
-  const x = clientX - scrollRect.left + scrollEl.scrollLeft - header;
-  const sec = x / pxPerSec;
-  return clamp(sec, 0, Math.max(durationSec, 0));
-}
 
 export function TimelinePlayhead({
   positionSec,
   durationSec,
   disabled = false,
-  onPositionChange,
+  onSeek,
+  onJump,
 }: TimelinePlayheadProps) {
   const { secToPx, pxPerSec } = useTimelineScale();
   const layerRef = React.useRef<HTMLDivElement>(null);
-  const dragRef = React.useRef<{ pointerId: number; dragging: boolean } | null>(null);
-  const onPositionChangeRef = React.useRef(onPositionChange);
-  onPositionChangeRef.current = onPositionChange;
+  const dragRef = React.useRef<{ pointerId: number } | null>(null);
+  const onSeekRef = React.useRef(onSeek);
+  const onJumpRef = React.useRef(onJump);
+  onSeekRef.current = onSeek;
+  onJumpRef.current = onJump;
   const [dragging, setDragging] = React.useState(false);
 
   const resolveSec = React.useCallback(
@@ -45,15 +38,20 @@ export function TimelinePlayhead({
     [durationSec, positionSec, pxPerSec],
   );
 
-  const endDrag = React.useCallback((target: HTMLElement, pointerId: number) => {
-    if (dragRef.current?.pointerId === pointerId) {
+  const endDrag = React.useCallback(
+    (target: HTMLElement, pointerId: number, clientX: number) => {
+      if (dragRef.current?.pointerId !== pointerId) {
+        return;
+      }
       dragRef.current = null;
       setDragging(false);
       if (target.hasPointerCapture(pointerId)) {
         target.releasePointerCapture(pointerId);
       }
-    }
-  }, []);
+      onSeekRef.current(resolveSec(clientX), 'commit');
+    },
+    [resolveSec],
+  );
 
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (disabled || event.button !== 0) {
@@ -62,9 +60,9 @@ export function TimelinePlayhead({
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = { pointerId: event.pointerId, dragging: true };
+    dragRef.current = { pointerId: event.pointerId };
     setDragging(true);
-    onPositionChangeRef.current(resolveSec(event.clientX));
+    onSeekRef.current(resolveSec(event.clientX), 'scrub');
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -72,15 +70,15 @@ export function TimelinePlayhead({
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
     }
-    onPositionChangeRef.current(resolveSec(event.clientX));
+    onSeekRef.current(resolveSec(event.clientX), 'scrub');
   };
 
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    endDrag(event.currentTarget, event.pointerId);
+    endDrag(event.currentTarget, event.pointerId, event.clientX);
   };
 
   const onPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
-    endDrag(event.currentTarget, event.pointerId);
+    endDrag(event.currentTarget, event.pointerId, event.clientX);
   };
 
   const leftPx = secToPx(positionSec);
@@ -108,10 +106,10 @@ export function TimelinePlayhead({
           const step = event.shiftKey ? 1 : 0.25;
           if (event.key === 'ArrowLeft') {
             event.preventDefault();
-            onPositionChangeRef.current(clamp(positionSec - step, 0, durationSec));
+            onJumpRef.current(Math.max(0, positionSec - step));
           } else if (event.key === 'ArrowRight') {
             event.preventDefault();
-            onPositionChangeRef.current(clamp(positionSec + step, 0, durationSec));
+            onJumpRef.current(Math.min(durationSec, positionSec + step));
           }
         }}
       >
@@ -120,8 +118,4 @@ export function TimelinePlayhead({
       </div>
     </div>
   );
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }

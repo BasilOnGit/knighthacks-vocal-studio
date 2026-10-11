@@ -1,6 +1,8 @@
-import { fakePreset } from '../../../shared/fakePreset.ts';
 import { buildMixingGuideForModel } from '../../../shared/mixingGuide.ts';
+import { FEW_SHOT_SEEDS, matchSeed } from '../../../shared/matchSeed.ts';
 import { MAX_EFFECTS, PARAM_RANGES, fillParams } from '../../../shared/params.ts';
+import { stampPresetFromFeatures } from '../../../shared/stampPreset.ts';
+import { clampTrackVolumeDb, withResolvedTrackVolume } from '../../../shared/trackVolume.ts';
 import { validatePreset } from '../../../shared/validate.ts';
 
 const FEATURE_KEYS = [
@@ -10,6 +12,13 @@ const FEATURE_KEYS = [
   'pitchHz',
   'noiseFloorDb',
   'voicedSeconds',
+  'key',
+  'scaleMajor',
+  'keyConfidence',
+  'pitchStability',
+  'crestDb',
+  'sibilanceRatio',
+  'bpm',
 ];
 
 const HF_CHAT_URL = 'https://router.huggingface.co/v1/chat/completions';
@@ -26,28 +35,46 @@ const CATALOG = Object.entries(PARAM_RANGES)
 
 const MIXING_GUIDE = buildMixingGuideForModel();
 
+const FEW_SHOT_BLOCK = FEW_SHOT_SEEDS.map((seed) => JSON.stringify({
+  name: seed.name,
+  explanation: seed.explanation,
+  trackVolumeDb: seed.trackVolumeDb ?? 0,
+  chain: seed.chain.map(({ type, params, why }) => ({ type, params, why })),
+})).join('\n');
+
 const SYSTEM_PROMPT = `You are an expert vocal mixing engineer. Output JSON only, matching the schema, no prose.
-Schema: {"name": string, "explanation": string, "chain": [{"type": string, "params": {parameter: number}, "why": string}]}
+Schema: {"name": string, "explanation": string, "trackVolumeDb": number (optional, −36 to +6), "chain": [{"type": string, "params": {parameter: number}, "why": string}]}
 Use only catalog effects and parameters. Stay inside ranges. Never more than ${MAX_EFFECTS} effects.
+Units: mix/drive/amount/width and most wet controls are 0–100 (percent). autotune key is 0–11 (0=C … 11=B). scaleMajor 1=major, 0=minor. delay pingPong 0 or 1.
 The chain array is serial signal flow: index 0 processes the vocal first. The host applies your order exactly — it never re-sorts.
 You choose which effects to include and their order based on the user's prompt and the voice features. Do not paste a default template chain every time.
 You may include the same type more than once (e.g. two eq nodes). Write a short why per effect (mention placement when order is unusual).
 The explanation field should summarize the sonic goal and why this chain order serves the prompt.
-The code fills missing parameters and assigns ids.
+The code fills missing parameters and assigns ids. Do not guess musical key — use features.key and features.scaleMajor when setting autotune (these reflect the beat track when BPM is present, not the singer's detected key).
 
 Workflow (internal, before you write JSON):
 1. Interpret the prompt (genre, mood, references, dry/wet, tuned/raw, bright/dark).
 2. Select effects that match — omit what the prompt does not need.
 3. Sequence them deliberately for that sound (not a fixed master bus order).
 4. Set parameters using features and the catalog ranges.
+5. Set trackVolumeDb when the vibe needs a different fader level (track mixer, not clip gain). Omit on follow-ups only if the user did not ask to change level.
 
-Parameter habits:
-compressor — kneeDb 6–12, mix 0.75–0.9 for parallel glue; ratio 3–6 intimate, 4–8 punchy; makeupDb 2–5 when loudnessDb is low
-saturation — drive 0.08–0.2, mix 0.1–0.25 unless gritty/lo-fi requested
-delay — mix usually under 0.25, feedback under 0.35 on leads
-reverb — intimate: decay under 1 s, preDelay 20–40 ms, mix 0.08–0.14; spacious: decay 2–5 s, higher mix
+Parameter habits (clean first — this DSP gets harsh if you copy bright DAW numbers blindly):
+trackVolumeDb — −36 to +6 dB; whisper/intimate/background −3 to −6, standard pop/rap 0 to +2, loud anthem/upfront +2 to +4; lower if loudnessDb > −16, raise if loudnessDb < −26
+compressor — mix 100 for Digi Comp style; kneeDb 10–14; ratio 2.5–4 intimate, 4–6 punchy; makeupDb 0–2; attack 8–15 ms, release 50–120 ms
+saturation — omit for clean/BandLab-style vocals; drive 0.06–0.15, mix 0.08–0.18 only for warmth/grit
+deesser — freqHz 8000–14000 (air/sizzle), not 5–6 kHz (that chews presence). mix 0.5–0.75, thresholdDb around -24 to -18
+delay — timeMs, feedback and mix as 0–100 % (BandLab D-Delay): feedback 10–20 on leads, mix 10–25; pingPong 1 for stereo bounce on spacious/dreamy, 0 for mono slap
+denoise — place first when used; amount 35–55 clean-up, 55–80 noisy room; omit on pristine studio takes
+rider — after compressor for smooth level; targetDb -20 to -16; speed 0.25–0.5; maxGainDb 4–8; omit for aggressive punch chains
+doubler — mix 12–30 subtle width, 30–45 obvious stack; delayMs 12–22; width 60–90; before delay/reverb when widening
+reverb — mix/size/tone are 0–100 (BandLab Studio Reverb): mix 8–18 intimate, 25–45 spacious; size 10–25 small room, 40–80 hall; tone 10–25 dark, 40–60 bright
+eq — start near 0 dB. Do not stack presenceDb and airDb; for clean treble use a little airDb (1–3) and leave presenceDb at 0 or a cut. High-pass only unless the prompt asks for tone.
 
 ${MIXING_GUIDE}
+
+Example presets (compact JSON — match units and style, do not copy blindly):
+${FEW_SHOT_BLOCK}
 
 Catalog (parameter ranges):
 ${CATALOG}`;
@@ -61,55 +88,51 @@ export function validatePrompt(body) {
 
 export function validateFeatures(features) {
   if (!features || typeof features !== 'object') {
-    throw new Error('Provide the six voice measurements as finite numbers.');
+    throw new Error('Provide voice measurements as finite numbers.');
   }
   const result = {};
   for (const key of FEATURE_KEYS) {
     const value = features[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) {
-      throw new Error('Provide the six voice measurements as finite numbers.');
+      throw new Error('Provide voice measurements as finite numbers.');
     }
     result[key] = value;
   }
   return result;
 }
 
-export function promptRejectsSpace(prompt) {
-  return /\b(dry|no reverb|bone-?dry|without reverb|a cappella dry)\b/i.test(prompt);
-}
-
-const LEADING_CLEANUP_TYPES = new Set(['gate', 'autotune']);
-
-/** Insert EQ after gate/autotune blocks so model-chosen pitch/noise order is preserved. */
-export function eqInsertIndex(chain) {
-  let index = 0;
-  while (index < chain.length && LEADING_CLEANUP_TYPES.has(chain[index].type)) {
-    index += 1;
+export function validateHistory(body) {
+  if (body?.history == null) {
+    return [];
   }
-  return index;
+  if (!Array.isArray(body.history)) {
+    throw new Error('history must be an array of prior prompts.');
+  }
+  const out = [];
+  for (const entry of body.history.slice(-5)) {
+    if (!entry || typeof entry.prompt !== 'string' || !entry.prompt.trim()) {
+      continue;
+    }
+    out.push({ prompt: entry.prompt.trim() });
+  }
+  return out;
 }
 
-export function ensureMixProtocol(preset, prompt) {
+export function promptRejectsSpace(prompt) {
+  return /\b(dry|no reverb|bone-?dry|without reverb|a cappella dry|podcast)\b/i.test(prompt);
+}
+
+/** Append a high-pass EQ only when the model omitted EQ. Never inject reverb. */
+export function ensureMixProtocol(preset) {
   const chain = [...preset.chain];
   if (!chain.some((node) => node.type === 'eq')) {
-    chain.splice(eqInsertIndex(chain), 0, {
+    chain.push({
       type: 'eq',
       params: fillParams('eq', { lowCutHz: 80 }),
       why: 'Default high-pass cleanup',
     });
   }
-  if (!chain.some((node) => node.type === 'reverb') && !promptRejectsSpace(prompt)) {
-    chain.push({
-      type: 'reverb',
-      params: fillParams('reverb', { decaySec: 0.9, mix: 0.12 }),
-      why: 'Short room by default',
-    });
-  }
   return validatePreset({ ...preset, chain });
-}
-
-function fallbackResult() {
-  return { preset: validatePreset(fakePreset), source: 'fallback' };
 }
 
 function parseModelJson(content) {
@@ -122,12 +145,62 @@ function isRetryable(error) {
   return error instanceof SyntaxError || error?.name === 'ZodError';
 }
 
-function userMessage(prompt, features, errorNote) {
+function seedStartingPreset(prompt, currentPreset) {
+  if (currentPreset?.chain?.length) {
+    return currentPreset;
+  }
+  return validatePreset(matchSeed(prompt));
+}
+
+function finishPreset(preset, prompt, features, currentTrackVolumeDb) {
+  const protocol = ensureMixProtocol(preset);
+  const stamped = stampPresetFromFeatures(protocol, features);
+  return withResolvedTrackVolume(stamped, prompt, features, currentTrackVolumeDb);
+}
+
+export function validateCurrentTrackVolume(body) {
+  if (body?.currentTrackVolumeDb == null) {
+    return undefined;
+  }
+  const value = body.currentTrackVolumeDb;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('currentTrackVolumeDb must be a finite number.');
+  }
+  return clampTrackVolumeDb(value);
+}
+
+function userMessage(prompt, features, errorNote, currentPreset, history, currentTrackVolumeDb) {
   const lines = [
     `Prompt: ${prompt}`,
     `Features: ${JSON.stringify(features)}`,
+    'Do not guess key — set autotune key/scaleMajor from features.key and features.scaleMajor (beat key when features.bpm > 0).',
     'Build a custom chain: choose effects and their order for this prompt and voice. Do not output a generic chain unless the prompt is generic.',
   ];
+  if (currentTrackVolumeDb !== undefined) {
+    lines.push(
+      `Current track fader: ${currentTrackVolumeDb} dB (allowed −36 to +6). Set trackVolumeDb when the vibe needs a different level.`,
+    );
+  }
+  if (history.length > 0) {
+    lines.push(
+      'This is a follow-up refinement. Adjust the current chain to match the new prompt; keep working parts unless the user asks for a new sound.',
+    );
+    lines.push(
+      `Prior user prompts: ${history.map((entry) => entry.prompt).join(' → ')}`,
+    );
+  }
+  if (currentPreset?.chain?.length) {
+    if (history.length === 0) {
+      lines.push(
+        'Refine the current chain below when the prompt is incremental (e.g. less reverb, brighter). Replace it entirely only if the prompt asks for a new sound.',
+      );
+    }
+    lines.push(`Current chain JSON: ${JSON.stringify(currentPreset)}`);
+  } else {
+    lines.push(
+      `Starting seed chain JSON (refine this — do not invent a unrelated template): ${JSON.stringify(seedStartingPreset(prompt, currentPreset))}`,
+    );
+  }
   if (errorNote) {
     lines.push(`The previous output failed validation: ${errorNote.slice(0, 500)}`);
     lines.push('Return corrected JSON only.');
@@ -135,7 +208,17 @@ function userMessage(prompt, features, errorNote) {
   return lines.join('\n');
 }
 
-async function requestPreset(fetchImpl, token, model, prompt, features, errorNote) {
+async function requestPreset(
+  fetchImpl,
+  token,
+  model,
+  prompt,
+  features,
+  errorNote,
+  currentPreset,
+  history,
+  currentTrackVolumeDb,
+) {
   const response = await fetchImpl(HF_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -146,7 +229,10 @@ async function requestPreset(fetchImpl, token, model, prompt, features, errorNot
       model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage(prompt, features, errorNote) },
+        {
+          role: 'user',
+          content: userMessage(prompt, features, errorNote, currentPreset, history, currentTrackVolumeDb),
+        },
       ],
       response_format: { type: 'json_object' },
     }),
@@ -161,28 +247,62 @@ async function requestPreset(fetchImpl, token, model, prompt, features, errorNot
     throw new SyntaxError('Model returned no JSON message');
   }
   const validated = validatePreset(parseModelJson(content));
-  return ensureMixProtocol(validated, prompt);
+  return finishPreset(validated, prompt, features, currentTrackVolumeDb);
+}
+
+export function validateCurrentPreset(body) {
+  if (body?.currentPreset == null) {
+    return undefined;
+  }
+  return validatePreset(body.currentPreset);
 }
 
 export async function generatePreset(prompt, features, options = {}) {
   const token = (options.token !== undefined ? options.token : process.env.HF_TOKEN)?.trim();
   const model = (options.model !== undefined ? options.model : process.env.HF_MODEL)?.trim();
   const fetchImpl = options.fetch ?? globalThis.fetch;
+  const history = options.history ?? [];
+  const currentPreset = options.currentPreset
+    ? validatePreset(options.currentPreset)
+    : undefined;
+  const currentTrackVolumeDb = options.currentTrackVolumeDb;
   if (!token || !model) {
-    return fallbackResult();
+    const seed = validatePreset(matchSeed(prompt));
+    return {
+      preset: finishPreset(seed, prompt, features, currentTrackVolumeDb),
+      source: 'fallback',
+    };
   }
 
   let errorNote = '';
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const preset = await requestPreset(fetchImpl, token, model, prompt, features, errorNote);
+      const preset = await requestPreset(
+        fetchImpl,
+        token,
+        model,
+        prompt,
+        features,
+        errorNote,
+        currentPreset,
+        history,
+        currentTrackVolumeDb,
+      );
       return { preset, source: 'model' };
     } catch (error) {
       if (attempt === 1 || !isRetryable(error)) {
-        return fallbackResult();
+        const seed = validatePreset(matchSeed(prompt));
+        return {
+          preset: finishPreset(seed, prompt, features, currentTrackVolumeDb),
+          source: 'fallback',
+        };
       }
       errorNote = error instanceof Error ? error.message : 'Invalid preset JSON';
     }
   }
-  return fallbackResult();
+  const seed = validatePreset(matchSeed(prompt));
+  return {
+    preset: finishPreset(seed, prompt, features, currentTrackVolumeDb),
+    source: 'fallback',
+  };
 }
