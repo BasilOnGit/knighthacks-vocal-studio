@@ -50,7 +50,7 @@ Use only catalog effects and parameters. Stay inside ranges. Never more than ${M
 Units: mix/drive/amount/width and most wet controls are 0–100 (percent). autotune key is 0–11 (0=C … 11=B). scaleMajor 1=major, 0=minor. delay pingPong 0 or 1.
 The chain array is serial signal flow: index 0 processes the vocal first. The host applies your order exactly — it never re-sorts.
 You choose which effects to include and their order based on the user's prompt and the voice features. Do not paste a default template chain every time.
-You may include the same type more than once (e.g. two eq nodes). Write a short why per effect (mention placement when order is unusual).
+You may include the same type more than once (e.g. two eq nodes). Write a short why per effect as an imperative phrase only (e.g. "clean up residual noise while preserving vocal texture") — the app prepends measured level context; do not start with "Based on sound input".
 The explanation field should summarize the sonic goal and why this chain order serves the prompt.
 The code fills missing parameters and assigns ids. Do not guess musical key — use features.key and features.scaleMajor when setting autotune (these reflect the beat track when BPM is present, not the singer's detected key).
 

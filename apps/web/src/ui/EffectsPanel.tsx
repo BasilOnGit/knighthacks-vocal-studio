@@ -2,7 +2,8 @@ import React from 'react';
 import { PITCH_CLASS_NAMES } from '../../../../shared/musicKey';
 import { effectDisplayName } from '../../../../shared/effectLabels';
 import { PARAM_RANGES, type ParamRange } from '../../../../shared/params';
-import type { EffectNode, EffectType, Preset } from '../../../../shared/types';
+import type { EffectNode, EffectType, Preset, VoiceFeatures } from '../../../../shared/types';
+import { displayEffectWhy } from '../session/aiEffectWhy';
 import { EqSpectrumEditor } from './EqSpectrumEditor';
 import { ChevronDown, ChevronUp, ICON_SIZE, ICON_STROKE, Trash2 } from './icons';
 import { ToggleButton } from './ToggleButton';
@@ -188,6 +189,8 @@ export function EffectsPanel({
   onMove,
   onClearAll,
   clearAllDisabled,
+  features,
+  aiGeneratedNodeIds,
 }: {
   preset: Preset;
   source: string | null;
@@ -197,6 +200,8 @@ export function EffectsPanel({
   audioSampleRate?: number;
   editedSinceGenerate?: boolean;
   generateSummary?: string[] | null;
+  features?: VoiceFeatures | null;
+  aiGeneratedNodeIds?: ReadonlySet<string>;
   onParamChange: (id: string, key: string, value: number) => void;
   onEditStart?: () => void;
   onEnabledChange: (id: string, enabled: boolean) => void;
@@ -257,6 +262,11 @@ export function EffectsPanel({
             trackId={trackId}
             getSpectrumDb={getSpectrumDb}
             audioSampleRate={audioSampleRate}
+            whyText={displayEffectWhy(
+              node.why,
+              aiGeneratedNodeIds?.has(node.id) ?? false,
+              features ?? null,
+            )}
           />
         ))}
       </ul>
@@ -277,6 +287,7 @@ function EffectCard({
   trackId,
   getSpectrumDb,
   audioSampleRate,
+  whyText,
 }: {
   node: EffectNode;
   typeLabel: string;
@@ -290,6 +301,7 @@ function EffectCard({
   trackId?: string;
   getSpectrumDb?: () => Float32Array | null;
   audioSampleRate?: number;
+  whyText?: string;
 }) {
   const ranges = PARAM_RANGES[node.type];
   const mixRange = 'mix' in ranges ? ranges.mix : null;
@@ -400,7 +412,7 @@ function EffectCard({
           <div className="effect-head">
             <div className="effect-head__text">
               <strong className="effect-head__name">{typeLabel}</strong>
-              {node.why ? <p className="effect-head__why">{node.why}</p> : null}
+              {whyText ? <p className="effect-head__why">{whyText}</p> : null}
             </div>
             <div className="effect-head__controls">
               <ToggleButton

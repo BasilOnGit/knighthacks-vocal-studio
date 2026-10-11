@@ -49,6 +49,7 @@ import {featureWarnings} from './analysis/analyze';
 import {useVoiceFeatures} from './hooks/useVoiceFeatures';
 import type {AiTurn} from './session/aiThread';
 import {autotuneParamsFromFeatures,stampPresetFromFeatures} from './analysis/stampFeatures';
+import {applyAiEffectWhys} from './session/aiEffectWhy';
 import {effectDisplayName} from '../../../shared/effectLabels';
 import {defaultParams,EFFECT_CATALOG} from '../../../shared/params';
 import {normalizeAutotuneMixParams} from '../../../shared/effectMixPolicy';
@@ -213,7 +214,7 @@ function App(){
    const response=await fetch('/api/presets/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:userPrompt,features,history:history.length?history:undefined,currentPreset:prior.chain.length?prior:undefined,currentTrackVolumeDb:priorFader,currentTrackName:selectedTrack.name,otherTracks:otherTracks.length?otherTracks:undefined})});
    const data=await response.json().catch(()=>null);
    if(!response.ok||!data?.preset)throw new Error(data?.error??'Preset generation failed. Check that the API server is running.');
-   const preset=stampPresetFromFeatures(validatePreset(data.preset),features);
+   const preset=applyAiEffectWhys(stampPresetFromFeatures(validatePreset(data.preset),features),features);
    const trackVolumeDb=preset.trackVolumeDb??priorFader;
    const summary=summarizePresetChanges(prior,preset,{beforeTrackVolumeDb:priorFader,afterTrackVolumeDb:trackVolumeDb});
    stopPlayback();
@@ -282,7 +283,7 @@ function App(){
    {!selectedTrack?<InspectorEmpty>Select a track</InspectorEmpty>:<>
    {!hasTrackAudio?<InspectorEmpty>Import or record on {selectedTrack.name}</InspectorEmpty>:<>
    <div className="effect-picker">{EFFECT_CATALOG.map(type=><button key={type} type="button" disabled={recording} onClick={()=>addEffect(type)}>+ {effectDisplayName(type)}</button>)}</div>
-   {selectedTrack.preset.chain.length>0?<EffectsPanel trackLabel={selectedTrack.name} trackId={selectedTrack.id} getSpectrumDb={()=>engineRef.current?.getTrackSpectrumDb(selectedTrack.id)??null} audioSampleRate={engineRef.current?.getAudioSampleRate()??48000} preset={selectedTrack.preset} source={trackSources[selectedTrack.id]??'manual'} editedSinceGenerate={!!trackEdited} generateSummary={generateSummary} clearAllDisabled={recording||recordPending} onClearAll={clearTrackEffects} onMove={moveEffect} onEditStart={pushUndo} onParamChange={(id,key,value)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>{if(n.id!==id)return n;if(n.type==='autotune')return{...n,params:normalizeAutotuneMixParams({...n.params,[key]:value})};return{...n,params:{...n.params,[key]:value}};})},{skipUndo:true})} onEnabledChange={(id,enabled)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.filter(n=>n.id!==id)})} onReset={trackGenerated[selectedTrack.id]?()=>{pushUndo();setTracks(current=>current.map(t=>t.id===selectedTrack.id?{...t,preset:structuredClone(trackGenerated[selectedTrack.id])}:t));}:undefined}/>:null}
+   {selectedTrack.preset.chain.length>0?<EffectsPanel trackLabel={selectedTrack.name} trackId={selectedTrack.id} getSpectrumDb={()=>engineRef.current?.getTrackSpectrumDb(selectedTrack.id)??null} audioSampleRate={engineRef.current?.getAudioSampleRate()??48000} preset={selectedTrack.preset} source={trackSources[selectedTrack.id]??'manual'} editedSinceGenerate={!!trackEdited} generateSummary={generateSummary} features={features} aiGeneratedNodeIds={trackGenerated[selectedTrack.id]?new Set(trackGenerated[selectedTrack.id].chain.map(n=>n.id)):undefined} clearAllDisabled={recording||recordPending} onClearAll={clearTrackEffects} onMove={moveEffect} onEditStart={pushUndo} onParamChange={(id,key,value)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>{if(n.id!==id)return n;if(n.type==='autotune')return{...n,params:normalizeAutotuneMixParams({...n.params,[key]:value})};return{...n,params:{...n.params,[key]:value}};})},{skipUndo:true})} onEnabledChange={(id,enabled)=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.map(n=>n.id===id?{...n,enabled}:n)})} onRemove={id=>setTrackPreset(selectedTrack.id,{...selectedTrack.preset,chain:selectedTrack.preset.chain.filter(n=>n.id!==id)})} onReset={trackGenerated[selectedTrack.id]?()=>{pushUndo();setTracks(current=>current.map(t=>t.id===selectedTrack.id?{...t,preset:structuredClone(trackGenerated[selectedTrack.id])}:t));}:undefined}/>:null}
    </>}
    <SavedPresetsPanel disabled={recording||recordPending} currentPresetName={selectedTrack.preset.name??''} savedPresets={savedPresets} onSave={savePresetToSession} onApply={applySavedPreset} onRemove={removeSavedPreset}/>
    </>}

@@ -15,9 +15,14 @@ function send(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+function requestPath(req) {
+  return new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
+}
+
 const server = createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/api/health') return send(res, 200, { ok: true });
-  if (req.method !== 'POST' || req.url !== '/api/presets/generate') return send(res, 404, { error: 'Not found' });
+  const path = requestPath(req);
+  if (req.method === 'GET' && path === '/api/health') return send(res, 200, { ok: true });
+  if (req.method !== 'POST' || path !== '/api/presets/generate') return send(res, 404, { error: 'Not found' });
   try {
     const chunks = [];
     let size = 0;
@@ -72,4 +77,4 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(Number(process.env.PORT || 3001), '127.0.0.1', () => console.log('Vocal Studio API ready'));
+server.listen(Number(process.env.PORT || 3001), () => console.log('Vocal Studio API ready'));
