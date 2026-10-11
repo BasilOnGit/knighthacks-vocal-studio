@@ -1,31 +1,102 @@
-# KnightHacks Vocal Studio
-AI assisted vocal effects studio using Hugging Face models to generate and apply custom presets.
+# KnightHacks Vocal Studio (Waverio Studio)
 
-## Start locally
-Install Node.js 22+ and npm, then:
+Browser-based vocal DAW with real-time FX, multi-track recording, and AI-assisted preset generation. The web app runs the audio engine locally; the Node API handles preset generation via Hugging Face when configured.
+
+## Requirements
+
+- **Node.js 22+** and npm
+- Modern Chromium-based browser (Web Audio, AudioWorklets, IndexedDB)
+
+## Quick start
+
 ```bash
 git clone https://github.com/glitchyxlatrell/knighthacks-vocal-studio.git
 cd knighthacks-vocal-studio
 npm install
-npm run dev:api
 ```
-In a second terminal, run `npm run dev:web` and open the URL Vite prints.
-Copy `apps/api/.env.example` to `apps/api/.env` when configuring integrations. Never commit tokens or database credentials.
 
-## What is included
-- Record a vocal, trim it on a waveform, and play the trimmed clip.
-- Measure the take (loudness, brightness, pitch) and show warnings.
-- Apply an editable effect chain (gate, autotune, EQ, compressor, de-esser, saturation, chorus, delay, reverb) with a dry/processed toggle. Autotune uses the [Rubber Band Library](https://breakfastquay.com/rubberband/) (GPLv2) for formant-preserving pitch correction in the browser.
-- Node API that validates the prompt and voice measurements, calls Hugging Face when `HF_TOKEN` and `HF_MODEL` are set, and returns a labeled fallback preset if that call fails.
-- Hugging Face and Neon environment placeholders, plus the team build plan.
+Configure the API (optional for offline / fallback presets):
 
-The updated studio supports audio imports, recording onto multiple tracks, overlapping snippets, **track-level effect chains** (BandLab-style — all clips on a track share the same FX), per-clip volume/pan/trim, waveform trimming, clip deletion with Backspace/Delete, microphone monitoring, track/master mixing, loop playback, mix export, and browser-local session restore (IndexedDB for audio). Neon is the database; the Node server is the backend application.
+```bash
+cp apps/api/.env.example apps/api/.env
+```
 
-## Checks
-`npm test` checks backend prompt validation.
-`npm run test:ui` checks clip editing, snippet operations, and audio scheduling using a mocked audio engine.
-`npm run check` checks frontend TypeScript.
-`npm run build` builds the frontend.
+Edit `apps/api/.env` and set `HF_TOKEN` and `HF_MODEL` when you want live model generation. Never commit `.env` or secrets.
 
-See [the build plan](docs/BUILD_PLAN.md) for work order and Cursor handoff.
-See [the UI/backend handoff](docs/UI_BACKEND_HANDOFF.md) for integration points and manual verification.
+Run **two terminals**:
+
+```bash
+# Terminal 1 — API (port 3001)
+npm run dev:api
+
+# Terminal 2 — web UI (Vite; proxies /api → localhost:3001)
+npm run dev:web
+```
+
+Open the URL Vite prints (usually `http://localhost:5173`).
+
+## Repo layout
+
+| Path | Role |
+|------|------|
+| `apps/web` | React + Vite frontend, Tone.js engine, worklets, timeline UI |
+| `apps/api` | Preset generation API, validation, HF integration |
+| `shared/` | Preset types, effect params, seed library, mixing helpers |
+| `tests/` | UI/engine unit tests (`npm run test:ui`) |
+
+## What you can do
+
+**Timeline & tracks**
+
+- Multiple tracks (beat, vocal, custom), record or import audio, overlapping clips per track
+- Trim clips on the waveform, drag clips between tracks, undo/redo
+- Transport: play/pause, loop, scrub, mix export (WAV)
+- Per-clip volume, pan, fades, mute; per-track mixer (level, mute, solo)
+
+**Effects**
+
+- Track-level chains (all clips on a track share the same FX): gate, denoise, rider, autotune, EQ, compressor, de-esser, saturation, chorus, delay, reverb
+- Manual edits, saved presets (per browser tab), reset after AI generate
+- Bypass FX toggle on the transport bar
+- Formant-preserving autotune uses [Rubber Band](https://breakfastquay.com/rubberband/) via `rubberband-wasm` (GPLv2) in the browser
+
+**AI assistant**
+
+- Describe a sound in the **AI** inspector tab; optional follow-up turns per track
+- Uses voice measurements from the selected track’s audio; can consider other tracks in the session
+- API returns a validated preset; falls back to a local seed preset if the model call fails
+
+**Projects & persistence**
+
+- **Project tabs** in the top bar: switch, create (+), rename (double-click tab), delete (× when more than one project)
+- Each project auto-saves to **localStorage** (session JSON) and **IndexedDB** (clip audio)
+- Up to 16 projects in this browser; data stays on the device
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` / `npm run dev:web` | Vite dev server |
+| `npm run dev:api` | API with watch |
+| `npm run build` | Production web build |
+| `npm run check` | Typecheck `apps/web` |
+| `npm test` | API tests (`apps/api`) |
+| `npm run test:ui` | Shared + web logic tests in `tests/` |
+
+## Environment (`apps/api/.env`)
+
+| Variable | Purpose |
+|----------|---------|
+| `PORT` | API port (default `3001`) |
+| `HF_TOKEN` | Hugging Face token for generation |
+| `HF_MODEL` | Model id for generation |
+| `DATABASE_URL` | Optional Neon / Postgres (placeholders in repo) |
+
+## Docs
+
+- [Build plan](docs/BUILD_PLAN.md) — milestones and handoff
+- [UI ↔ API handoff](docs/UI_BACKEND_HANDOFF.md) — integration and manual checks
+
+## License note
+
+Third-party audio components (including Rubber Band) carry their own licenses. See dependency licenses and the Rubber Band site for distribution terms if you ship binaries or WASM publicly.
